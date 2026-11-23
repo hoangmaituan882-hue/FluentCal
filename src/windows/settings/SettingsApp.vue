@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, provide, ref, type Component } from 'vue';
+import { computed, onMounted, provide, ref, watch, type Component } from 'vue';
 import { FNavView } from '@/fluent';
 import { call, currentWindow, on } from '@/api';
 import { initStore, storeState } from '@/stores/doc';
@@ -15,6 +15,9 @@ import WebPage from './WebPage.vue';
 import AboutPage from './AboutPage.vue';
 import '../window-shell.css';
 import './settings.css';
+
+const props = defineProps<{ embedded?: boolean; initialPage?: string }>();
+defineEmits<{ close: [] }>();
 
 startThemeSync();
 
@@ -54,15 +57,25 @@ async function takePending() {
 
 onMounted(async () => {
   await initStore();
+  if (props.embedded) {
+    if (props.initialPage && props.initialPage in pages) pageKey.value = props.initialPage;
+    return;
+  }
   await takePending();
   on('pending://settings', () => void takePending());
   await currentWindow.show();
   await currentWindow.focus();
 });
+watch(
+  () => props.initialPage,
+  (p) => {
+    if (props.embedded && p && p in pages) pageKey.value = p;
+  },
+);
 </script>
 
 <template>
-  <div class="aux settings">
+  <div class="aux settings" :class="{ embedded }">
     <FNavView v-model="pageKey" :items="items" :footer-items="footer" title="设置">
       <div class="page-scroll">
         <component :is="page" v-if="storeState.ready" :key="pageKey" />

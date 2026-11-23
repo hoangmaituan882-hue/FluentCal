@@ -4,6 +4,7 @@ import { computed, nextTick, ref, watch } from 'vue';
 import { vTip } from '@/fluent';
 import type { ISODate } from '@/types';
 import type { Chip, WeekLayout } from '@/lib/layout';
+import { isServer } from '@/api';
 import { addTask } from '@/lib/tasks';
 import { doc, storeState } from '@/stores/doc';
 import { notify, ui } from './state';
@@ -84,6 +85,30 @@ function qaClose() {
 function onCellDblClick(date: ISODate) {
   if (!storeState.readOnly) ui.quickAdd = { date };
 }
+
+let cellTouchTimer: ReturnType<typeof setTimeout> | undefined;
+let cellTouchOrigin: { x: number; y: number } | null = null;
+function onCellPointerDown(date: ISODate, e: PointerEvent) {
+  if (e.pointerType !== 'touch' || (e.target as HTMLElement).closest('.chip, button, input')) return;
+  cellTouchOrigin = { x: e.clientX, y: e.clientY };
+  clearTimeout(cellTouchTimer);
+  const cx = e.clientX;
+  const cy = e.clientY;
+  cellTouchTimer = setTimeout(() => {
+    emit('cellMenu', date, new MouseEvent('contextmenu', { clientX: cx, clientY: cy, bubbles: true }));
+  }, 500);
+}
+function onCellPointerMove(e: PointerEvent) {
+  if (!cellTouchOrigin) return;
+  if (Math.hypot(e.clientX - cellTouchOrigin.x, e.clientY - cellTouchOrigin.y) > 8) {
+    clearTimeout(cellTouchTimer);
+    cellTouchOrigin = null;
+  }
+}
+function clearCellTouch() {
+  clearTimeout(cellTouchTimer);
+  cellTouchOrigin = null;
+}
 </script>
 
 <template>
@@ -105,10 +130,22 @@ function onCellDblClick(date: ISODate) {
           @click="ui.selected = c.date"
           @dblclick="onCellDblClick(c.date)"
           @contextmenu.prevent="emit('cellMenu', c.date, $event)"
+          @pointerdown="onCellPointerDown(c.date, $event)"
+          @pointermove="onCellPointerMove"
+          @pointerup="clearCellTouch"
+          @pointercancel="clearCellTouch"
         >
           <div class="head" :style="{ height: `${headH}px` }" v-tip="{ text: c.tip, placement: 'top' }">
             <span class="num">{{ c.label }}</span>
             <span v-if="c.lunar" class="lunar" :class="c.lunarKind">{{ c.lunar }}</span>
+            <button
+              v-if="isServer && !storeState.readOnly && ui.selected === c.date"
+              class="cell-add"
+              type="button"
+              title="新建任务"
+              @click.stop="ui.quickAdd = { date: c.date }"
+              @dblclick.stop
+            >+</button>
           </div>
           <span v-if="c.badge" class="badge" :class="c.badge === tr('休') ? 'off' : 'work'">{{ c.badge }}</span>
           <span :id="`desc-${c.date}`" class="sr-only">{{ c.aria }}</span>
@@ -368,5 +405,24 @@ function onCellDblClick(date: ISODate) {
 }
 .quick-add::placeholder {
   color: var(--calendar-text-tertiary);
+}
+.cell-add {
+  margin-left: auto;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--subtle-fill-hover);
+  color: var(--calendar-text);
+  font: inherit;
+  font-size: 13px;
+  line-height: 18px;
+  text-align: center;
+  padding: 0;
+  cursor: pointer;
+  flex: none;
+}
+.cell:has(.badge) .cell-add {
+  margin-right: 18px;
 }
 </style>

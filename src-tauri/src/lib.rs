@@ -556,7 +556,7 @@ pub fn run() {
         .manage(ShortcutErrors::default())
         .setup(|app| {
             let handle = app.handle().clone();
-            let default = app.path().app_data_dir()?;
+            let default = datadir::default_dir(&handle)?;
             std::fs::create_dir_all(&default)?;
             let (dir, local_settings, info) = datadir::resolve(&default);
             let store = Store::open_with(dir, local_settings)?;

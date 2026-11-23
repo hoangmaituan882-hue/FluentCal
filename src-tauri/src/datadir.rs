@@ -22,6 +22,14 @@ pub struct DataDir {
     pub missing: Option<String>,
 }
 
+/// Returns the configured `FLUENTCAL_DATA_DIR` override when set, otherwise the default app data dir.
+pub fn default_dir(app: &AppHandle) -> tauri::Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("FLUENTCAL_DATA_DIR").filter(|v| !v.is_empty()) {
+        return Ok(PathBuf::from(dir));
+    }
+    app.path().app_data_dir()
+}
+
 /// (data folder, local settings file if the folder is shared, status for the UI)
 pub fn resolve(default: &Path) -> (PathBuf, Option<PathBuf>, DataDir) {
     let configured = std::fs::read_to_string(default.join(POINTER)).ok().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
@@ -57,7 +65,7 @@ pub async fn pick_folder(app: AppHandle, window: tauri::Window) -> Option<String
 /// is merged with ours, never overwritten. Restarts the app.
 #[tauri::command]
 pub fn data_dir_set(app: AppHandle, store: State<'_, Arc<Store>>, path: Option<String>) -> Result<(), String> {
-    let default = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let default = default_dir(&app).map_err(|e| e.to_string())?;
     let target = path.map(PathBuf::from).unwrap_or_else(|| default.clone());
     if !target.is_dir() {
         return Err("文件夹不存在".into());

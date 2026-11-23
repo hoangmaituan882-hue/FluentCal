@@ -1,0 +1,16 @@
+{
+  "name": "FluentCal",
+  "short_name": "FluentCal",
+  "description": "FluentCal 日历与甘特图",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b2a5b",
+  "theme_color": "#0078D4",
+  "icons": [
+    {
+      "src": "/icon.png",
+      "sizes": "256x256",
+      "type": "image/png"
+    }
+  ]
+}

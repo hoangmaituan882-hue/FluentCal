@@ -1,0 +1,1 @@
+var e=(e,t)=>JSON.stringify(e??null)===JSON.stringify(t??null);function t(t,n,r){let i={...r},a=new Set([...Object.keys(t),...Object.keys(n)]);for(let r of a){let a=n[r];e(a,t[r])||(i[r]=a)}let o=i;return(o.milestone||o.end<o.start)&&(o.end=o.start),o}export{t};

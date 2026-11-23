@@ -1,0 +1,6 @@
+# 方式 A：直接通过 Cloudflare 橙云代理 + Caddy（Cloudflare SSL 设为 "完全/Full" 或 "完全(严格)/Full (strict)"）
+# 如果使用 Cloudflare Tunnel (cloudflared)，不需要 Caddy，直接让 Tunnel 指向 http://127.0.0.1:8080 即可。
+
+cal.你的域名.com {
+    reverse_proxy 127.0.0.1:8080
+}

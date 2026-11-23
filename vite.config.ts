@@ -16,7 +16,7 @@ export default defineConfig(({ mode }) => ({
   },
   envPrefix: ['VITE_', 'TAURI_'],
   build: {
-    outDir: mode === 'android' ? 'dist-android' : 'dist',
+    outDir: mode === 'android' ? 'dist-android' : mode === 'server' ? 'deploy/linux-server/public' : 'dist',
     target: 'chrome120',
     sourcemap: false,
   },

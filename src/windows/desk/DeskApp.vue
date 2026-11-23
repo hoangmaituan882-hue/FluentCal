@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch, watchEffect } from 'vue';
-import { FButton, FInfoBar } from '@/fluent';
-import { call, currentWindow, on, type DataDirInfo, type ResizeEdge } from '@/api';
+import { FButton, FInfoBar, FTextBox } from '@/fluent';
+import { call, currentWindow, isServer, on, type DataDirInfo, type ResizeEdge } from '@/api';
+import { checkSession, loginServer, logoutServer, serverModals, serverState } from '@/serverApi';
 import { doc, history, patchSettings, put, redo, storeState, initStore, taskList, undo, type ReplayResult } from '@/stores/doc';
 import { updateHolidays } from '@/stores/holidays';
 import { startThemeSync, deskVars } from '@/composables/theme';
@@ -18,6 +19,24 @@ import CountdownBar from './CountdownBar.vue';
 import '../window-shell.css';
 
 const GanttView = defineAsyncComponent(() => import('./gantt/GanttView.vue'));
+const EditorModal = defineAsyncComponent(() => import('../editor/EditorApp.vue'));
+const SettingsModal = defineAsyncComponent(() => import('../settings/SettingsApp.vue'));
+
+const loginUser = ref('fluentcal');
+const loginPass = ref('');
+async function submitLogin() {
+  if (!loginPass.value || serverState.loggingIn) return;
+  const ok = await loginServer(loginUser.value.trim() || 'fluentcal', loginPass.value);
+  if (ok) {
+    loginPass.value = '';
+    await bootApp();
+  }
+}
+async function doLogout() {
+  serverModals.settings = null;
+  await logoutServer();
+  location.reload();
+}
 
 const view = computed(() => doc.settings.calendar.view);
 const desk = computed(() => doc.settings.desk);
@@ -123,10 +142,10 @@ const closeToast = () => (ui.toast = null);
 const undoFromToast = () => void undo().then(closeToast);
 
 let intervals: ReturnType<typeof setInterval>[] = [];
-onMounted(async () => {
-  window.addEventListener('keydown', onKey);
-  window.addEventListener('focusin', wantsKeyboard, true);
-  window.addEventListener('pointerdown', wantsKeyboard, true);
+let booted = false;
+async function bootApp() {
+  if (booted) return;
+  booted = true;
   await initStore();
   ui.weeksStart = defaultWeeksStart();
   void call<DataDirInfo>('data_dir_info').then((d) => {
@@ -151,6 +170,17 @@ onMounted(async () => {
     setInterval(() => void updateHolidays(), 6 * 3600_000),
   ];
   on('reminder://fired', () => scheduleReminders());
+}
+
+onMounted(async () => {
+  window.addEventListener('keydown', onKey);
+  window.addEventListener('focusin', wantsKeyboard, true);
+  window.addEventListener('pointerdown', wantsKeyboard, true);
+  if (isServer) {
+    const authed = await checkSession();
+    if (!authed) return;
+  }
+  await bootApp();
 });
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKey);
@@ -213,6 +243,36 @@ watch(
           <FButton size="icon" variant="subtle" icon="close" title="关闭" @click="closeToast" />
         </div>
       </Transition>
+      <div v-if="isServer && !serverState.authenticated" class="server-gate">
+        <form class="gate-card" @submit.prevent="submitLogin">
+          <h2>FluentCal 云端日历</h2>
+          <p v-if="serverState.checking" class="gate-sub">正在检查登录状态…</p>
+          <template v-else>
+            <p class="gate-sub">登录后即可在 iPad / 网页与电脑同步日程和甘特图。</p>
+            <FTextBox v-model="loginUser" placeholder="用户名" />
+            <FTextBox v-model="loginPass" type="password" placeholder="密码" @enter="submitLogin" />
+            <p v-if="serverState.loginError" class="gate-err" role="alert">{{ serverState.loginError }}</p>
+            <FButton type="submit" variant="accent" :disabled="!loginPass || serverState.loggingIn">
+              {{ serverState.loggingIn ? '登录中…' : '登录' }}
+            </FButton>
+          </template>
+        </form>
+      </div>
+      <div v-if="isServer && serverModals.editor" class="modal-backdrop" @click.self="serverModals.editor = null">
+        <div class="modal-sheet editor-sheet" role="dialog" aria-modal="true" aria-label="编辑任务">
+          <EditorModal embedded :initial-payload="(serverModals.editor as any)" @close="serverModals.editor = null" />
+        </div>
+      </div>
+      <div v-if="isServer && serverModals.settings" class="modal-backdrop" @click.self="serverModals.settings = null">
+        <div class="modal-sheet settings-sheet" role="dialog" aria-modal="true" aria-label="设置">
+          <div class="modal-bar">
+            <span class="modal-title">设置</span>
+            <FButton size="small" variant="subtle" @click="doLogout">退出登录</FButton>
+            <FButton size="icon" variant="subtle" icon="close" title="关闭" @click="serverModals.settings = null" />
+          </div>
+          <SettingsModal embedded :initial-page="serverModals.settings.page" @close="serverModals.settings = null" />
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -316,5 +376,89 @@ watch(
 .toast-leave-to {
   opacity: 0;
   transform: translate(-50%, 8px);
+}
+.server-gate {
+  position: absolute;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: color-mix(in srgb, var(--solid-base) 72%, transparent);
+  backdrop-filter: blur(24px);
+}
+.gate-card {
+  width: min(360px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 24px;
+  border-radius: 12px;
+  background: var(--solid-base);
+  border: 1px solid var(--card-stroke);
+  box-shadow: var(--shadow-dialog);
+  color: var(--text-primary);
+  --text-glow: none;
+}
+.gate-card h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+.gate-sub {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.gate-err {
+  margin: 0;
+  font-size: 12px;
+  color: var(--system-critical);
+}
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(6px);
+}
+.modal-sheet {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-height: min(88vh, 760px);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--solid-base);
+  border: 1px solid var(--card-stroke);
+  box-shadow: var(--shadow-dialog);
+  --text-glow: none;
+}
+.editor-sheet {
+  max-width: 600px;
+  height: min(86vh, 720px);
+}
+.settings-sheet {
+  max-width: 960px;
+  height: min(88vh, 740px);
+}
+.modal-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--divider);
+  background: var(--solid-base);
+}
+.modal-title {
+  margin-right: auto;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
 }
 </style>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { confirm, FButton, FCheckbox, FColorSwatches, FDatePicker, FSelect, FSlider, FTextBox, FTimePicker, TASK_COLORS } from '@/fluent';
 import type { Task } from '@/types';
@@ -17,6 +17,9 @@ import '../window-shell.css';
 import './editor.css';
 
 type Payload = { mode: 'edit'; taskId: string; date?: string } | { mode: 'new'; start?: string; end?: string; groupId?: string; title?: string; milestone?: boolean };
+
+const props = defineProps<{ embedded?: boolean; initialPayload?: Payload | null }>();
+const emit = defineEmits<{ close: [] }>();
 
 startThemeSync();
 const draft = ref<Task | null>(null);
@@ -60,7 +63,8 @@ async function takePending() {
 }
 function close() {
   closing = true;
-  void currentWindow.close();
+  if (props.embedded) emit('close');
+  else void currentWindow.close();
 }
 async function cancel() {
   if (await discardOk()) close();
@@ -162,6 +166,10 @@ function onKey(e: KeyboardEvent) {
 onMounted(async () => {
   window.addEventListener('keydown', onKey);
   await initStore();
+  if (props.embedded) {
+    load(props.initialPayload ?? null);
+    return;
+  }
   load(await call<Payload | null>('pending_take'));
   on('pending://editor', () => void takePending());
   await currentWindow.show();
@@ -174,9 +182,18 @@ onMounted(async () => {
     });
   }
 });
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKey);
+});
+watch(
+  () => props.initialPayload,
+  (p) => {
+    if (props.embedded && p) load(p);
+  },
+);
 </script>
 <template>
-  <div class="aux editor">
+  <div class="aux editor" :class="{ embedded }">
     <p v-if="missing" class="missing">这个任务已被删除。</p>
     <template v-else-if="draft">
       <main class="body">

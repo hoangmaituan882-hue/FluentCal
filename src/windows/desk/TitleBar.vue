@@ -6,7 +6,8 @@ import { dayInfo } from '@/lib/lunar';
 import { doc, patchSettings } from '@/stores/doc';
 import { now } from '@/composables/now';
 import type { CalendarView } from '@/types';
-import { goToday, openSettings, page, ui, viewTitle } from './state';
+import { isServer } from '@/api';
+import { goToday, openEditor, openSettings, page, ui, viewTitle } from './state';
 import { moreMenu } from './menus';
 import YearMonthPicker from './YearMonthPicker.vue';
 import { syncNow, syncStatus, watchSync } from '@/composables/sync';
@@ -76,6 +77,16 @@ const pickerOpen = ref(false);
         @click="syncNow"
       />
       <FButton
+        v-if="isServer"
+        variant="subtle"
+        size="icon"
+        icon="add"
+        foreground="var(--calendar-text)"
+        title="新建任务"
+        @click="openEditor({ mode: 'new', start: ui.selected })"
+      />
+      <FButton
+        v-if="!isServer"
         variant="subtle"
         size="icon"
         :foreground="locked ? 'var(--calendar-text)' : 'var(--accent-text)'"

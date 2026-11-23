@@ -5,6 +5,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import * as web from './webApi';
+import * as serverApi from './serverApi';
 import { Capacitor } from '@capacitor/core';
 
 export const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -20,10 +21,15 @@ export const origin: string = isTauri ? windowLabel : `${windowLabel}:${Math.ran
 /** The read-only web view served by FluentCal in the local network (see webApi.ts). */
 export const isWeb = !isTauri && windowLabel === 'web';
 
+/** Full editable web app served by the standalone Linux server (built with `--mode server`). */
+export const isServer = !isTauri && !isMobile && !isWeb && import.meta.env.MODE === 'server';
+
 export function call<T = void>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (isTauri) return invoke<T>(cmd, args);
   if (isMobile) return import('./mobile/backend').then(m => m.call<T>(cmd, args ?? {}));
-  return isWeb ? web.call<T>(cmd, args ?? {}) : mock.call<T>(cmd, args ?? {});
+  if (isWeb) return web.call<T>(cmd, args ?? {});
+  if (isServer) return serverApi.call<T>(cmd, args ?? {});
+  return mock.call<T>(cmd, args ?? {});
 }
 
 /** Subscribes to a backend event; returns an unsubscribe function. */
@@ -35,6 +41,7 @@ export function on<T>(event: string, cb: (payload: T) => void): () => void {
     return () => { disposed = true; un?.(); };
   }
   if (isWeb) return web.on(event, cb as (p: unknown) => void);
+  if (isServer) return serverApi.on(event, cb as (p: unknown) => void);
   if (!isTauri) return mock.on(event, cb as (p: unknown) => void);
   const p = listen<T>(event, (e) => cb(e.payload));
   return () => void p.then((un) => un());

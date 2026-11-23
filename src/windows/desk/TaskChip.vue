@@ -65,6 +65,48 @@ const style = computed(() => ({
   '--progress-width': props.chip.multiDay ? `${bar.value.fill * 100}%` : '0%',
   '--chip-text': doc.settings.desk.taskTextMode === 'task' && (task.value.color || groupColor.value) ? colors.value.text : 'var(--calendar-text)',
 }));
+
+let touchOrigin: { x: number; y: number } | null = null;
+let touchLongPress = false;
+let touchTimer: ReturnType<typeof setTimeout> | undefined;
+let lastPointerType = 'mouse';
+
+function clearTouchTimer() {
+  clearTimeout(touchTimer);
+  touchTimer = undefined;
+}
+
+function onChipPointerDown(e: PointerEvent) {
+  lastPointerType = e.pointerType;
+  if (e.pointerType === 'touch') {
+    touchLongPress = false;
+    touchOrigin = { x: e.clientX, y: e.clientY };
+    clearTouchTimer();
+    const cx = e.clientX;
+    const cy = e.clientY;
+    touchTimer = setTimeout(() => {
+      touchLongPress = true;
+      emit('menu', new MouseEvent('contextmenu', { clientX: cx, clientY: cy, bubbles: true }));
+    }, 480);
+  }
+  emit('pointerdown', e);
+}
+
+function onChipPointerMove(e: PointerEvent) {
+  if (!touchOrigin) return;
+  if (Math.hypot(e.clientX - touchOrigin.x, e.clientY - touchOrigin.y) > 8) {
+    clearTouchTimer();
+    touchOrigin = null;
+  }
+}
+
+function onChipClick() {
+  if (touchLongPress) {
+    touchLongPress = false;
+    return;
+  }
+  if (storeState.readOnly || lastPointerType === 'touch') emit('open');
+}
 </script>
 
 <template>
@@ -84,10 +126,13 @@ const style = computed(() => ({
     :aria-roledescription="tr('任务')"
     :aria-label="`${task.title}${occ.done ? tr('，已完成') : ''}`"
     v-tip="tip"
-    @click="storeState.readOnly && emit('open')"
+    @click="onChipClick"
     @dblclick.stop="emit('open')"
     @contextmenu.prevent.stop="emit('menu', $event)"
-    @pointerdown="emit('pointerdown', $event)"
+    @pointerdown="onChipPointerDown"
+    @pointermove="onChipPointerMove"
+    @pointerup="clearTouchTimer"
+    @pointercancel="clearTouchTimer"
     @keydown="emit('key', $event)"
   >
     <span v-if="ui.flashTask === task.id" class="located-ring" aria-hidden="true" />
