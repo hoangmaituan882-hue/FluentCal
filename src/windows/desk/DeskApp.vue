@@ -12,7 +12,7 @@ import { computeReminders } from '@/lib/reminders';
 import { sampleData } from '@/lib/seed';
 import { autoPostpone, clearSampleData, sampleCount } from '@/lib/tasks';
 import { startOfMonth } from '@/lib/date';
-import { defaultWeeksStart, goToday, notify, openEditor, page, ui } from './state';
+import { clearPendingDraft, defaultWeeksStart, goToday, notify, openEditor, page, setPendingDraft, ui, type PendingTimelineDraft } from './state';
 import TitleBar from './TitleBar.vue';
 import LeftSidebar from './LeftSidebar.vue';
 import CompactView from './CompactView.vue';
@@ -186,6 +186,8 @@ const closeToast = () => (ui.toast = null);
 const undoFromToast = () => void undo().then(closeToast);
 
 let intervals: ReturnType<typeof setInterval>[] = [];
+let unlistenDraftSync: (() => void) | undefined;
+let unlistenEditorClosed: (() => void) | undefined;
 let booted = false;
 async function bootApp() {
   if (booted) return;
@@ -213,6 +215,8 @@ async function bootApp() {
     scheduleReminders();
   });
   on<{ error: string | null }>('store://save-status', (p) => (saveError.value = p.error));
+  unlistenDraftSync = on<PendingTimelineDraft | null>('editor://draft', (d) => setPendingDraft(d));
+  unlistenEditorClosed = on('editor://closed', () => clearPendingDraft());
   intervals = [
     setInterval(scheduleReminders, 30 * 60_000),
     setInterval(() => void updateHolidays(), 6 * 3600_000),
@@ -242,8 +246,17 @@ onBeforeUnmount(() => {
   window.removeEventListener('focusin', wantsKeyboard, true);
   window.removeEventListener('pointerdown', wantsKeyboard, true);
   intervals.forEach(clearInterval);
+  unlistenDraftSync?.();
+  unlistenEditorClosed?.();
   spring.dispose();
 });
+
+watch(
+  () => serverModals.editor,
+  (p) => {
+    if (!p || (p as { mode?: string }).mode !== 'new') clearPendingDraft();
+  },
+);
 
 watch(() => [doc.tasks, doc.settings.reminders], scheduleReminders, { deep: true });
 // Separate sources: a getter returning a new array would fire on every settings update.

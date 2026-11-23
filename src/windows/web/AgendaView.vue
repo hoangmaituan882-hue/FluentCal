@@ -127,7 +127,7 @@ defineExpose({ showToday });
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 0 4px 16px;
+  padding: 0 4px calc(24px + env(safe-area-inset-bottom));
   touch-action: pan-y;
 }
 .day {
@@ -138,11 +138,15 @@ defineExpose({ showToday });
 .flex-group h2 { margin-bottom: 4px; }
 .flex-note { margin: 0 8px 4px; font-size: 12px; color: var(--text-secondary); }
 h2 {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--solid-base);
   display: flex;
   align-items: baseline;
   gap: 8px;
-  margin: 0 0 4px;
-  padding: 0 8px;
+  margin: 0 0 6px;
+  padding: 8px 8px 6px;
   font-size: 15px;
   font-weight: 600;
 }
@@ -166,10 +170,10 @@ h2 {
   align-items: center;
   gap: 10px;
   width: 100%;
-  min-height: 44px;
-  padding: 6px 8px;
-  border: 0;
-  border-radius: 6px;
+  min-height: 46px;
+  padding: 8px 10px;
+  border: 1px solid var(--divider);
+  border-radius: 10px;
   background: var(--card-fill);
   color: var(--text-primary);
   font: inherit;
@@ -177,7 +181,7 @@ h2 {
   cursor: pointer;
 }
 .item + .item {
-  margin-top: 2px;
+  margin-top: 6px;
 }
 .item:hover {
   background: var(--subtle-fill-hover);

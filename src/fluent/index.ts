@@ -6,6 +6,7 @@ export { default as FDatePicker } from './FDatePicker.vue';
 export { default as FDialog } from './FDialog.vue';
 export { default as FField } from './FField.vue';
 export { default as FFlyout } from './FFlyout.vue';
+export { default as FGroupIcon } from './FGroupIcon.vue';
 export { default as FIcon } from './FIcon.vue';
 export { default as FInfoBar } from './FInfoBar.vue';
 export { default as FNavView } from './FNavView.vue';

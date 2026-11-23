@@ -1,43 +1,101 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
-import { FIcon, showMenu, TASK_COLORS, taskColor } from '@/fluent';
-import type { Task } from '@/types';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { FGroupIcon, FIcon, showMenu, taskColor, type MenuItem } from '@/fluent';
+import type { Task, TaskStatus } from '@/types';
 import { call } from '@/api';
 import { flexKind, MONTH } from '@/lib/flex';
 import { formatFriendly } from '@/lib/date';
-import { checklistStats, effectiveStatus } from '@/lib/taskMeta';
+import {
+  applyChecklist,
+  applyTaskStatus,
+  buildDependencyGraph,
+  checklistStats,
+  effectivePriority,
+  effectiveStatus,
+  effectiveWorkspaceStatus,
+  PRIORITY_META,
+  PRIORITY_ORDER,
+  STATUS_META,
+  WORKSPACE_STATUS_ORDER,
+} from '@/lib/taskMeta';
 import { addTask, saveGroup, saveTask, setOccurrenceDone } from '@/lib/tasks';
 import { isDark } from '@/composables/theme';
 import { now } from '@/composables/now';
 import { doc, taskList } from '@/stores/doc';
 import MonthView from '../desk/MonthView.vue';
+import YearMonthPicker from '../desk/YearMonthPicker.vue';
 import { goToday, page, ui, viewTitle } from '../desk/state';
+import PriorityGlyph from './PriorityGlyph.vue';
+import StatusGlyph from './StatusGlyph.vue';
+import TasksView from './TasksView.vue';
+import { useSlidingIndicator } from './useSlidingIndicator';
+import { cancelTaskPreview, hideTaskPreview, showTaskPreview } from './useTaskHoverPreview';
 import { classifyTaskBucket, relativeTimeLabel } from './workspaceModel';
+import { buildGroupCustomizeChildren, openTaskContextMenu, STATUS_DOT_COLOR } from './workspaceMenus';
+
+type SubTab = 'overview' | 'tasks' | 'calendar' | 'resources';
 
 const props = defineProps<{
   groupId: string;
   searchQuery: string;
+  activeSubTab?: SubTab;
 }>();
 
 const emit = defineEmits<{
   openTask: [taskId: string];
   closeTab: [];
+  'update:subTab': [tab: SubTab];
+  'update:searchQuery': [q: string];
 }>();
 
-type SubTab = 'overview' | 'tasks' | 'calendar' | 'resources';
-const subTab = ref<SubTab>('overview');
+const subTab = ref<SubTab>(props.activeSubTab ?? 'overview');
+watch(
+  () => props.activeSubTab,
+  (next) => {
+    if (next && next !== subTab.value) subTab.value = next;
+  },
+);
+function setSubTab(tab: SubTab) {
+  subTab.value = tab;
+  emit('update:subTab', tab);
+}
+function onTasksSearchUpdate(q: string) {
+  emit('update:searchQuery', q);
+}
+function onTasksOpenTask(id: string) {
+  emit('openTask', id);
+}
 const quickTitle = ref('');
-const showDone = ref(false);
 const editingName = ref(false);
 const nameDraft = ref('');
+const nameInputRef = ref<HTMLInputElement>();
+const tabsRef = ref<HTMLElement>();
+const calTitleRef = ref<HTMLElement | null>(null);
+const ymOpen = ref(false);
+const nowTick = ref(Date.now());
+let relTimer: ReturnType<typeof setInterval> | undefined;
 
 const group = computed(() => doc.groups[props.groupId]);
+
+const { style: tabStyle, ready: tabReady, visible: tabVisible } = useSlidingIndicator(
+  tabsRef,
+  '.at-btn.active',
+  [subTab, () => props.groupId],
+  { horizontalOnly: true },
+);
+
+onMounted(() => {
+  relTimer = setInterval(() => {
+    nowTick.value = Date.now();
+  }, 60_000);
+});
 
 // Temporarily scope ui.groupFilter when the Area calendar tab is mounted, restoring on exit.
 let savedFilterSnapshot: string[] | null = null;
 watch(
   [subTab, () => props.groupId],
   ([tab, gid]) => {
+    if (tab !== 'calendar') ymOpen.value = false;
     if (tab === 'calendar') {
       if (savedFilterSnapshot === null) savedFilterSnapshot = [...ui.groupFilter];
       ui.groupFilter = [gid];
@@ -52,6 +110,8 @@ watch(
 );
 
 onBeforeUnmount(() => {
+  clearInterval(relTimer);
+  cancelTaskPreview();
   if (savedFilterSnapshot !== null) {
     ui.groupFilter = savedFilterSnapshot;
     savedFilterSnapshot = null;
@@ -63,7 +123,7 @@ const groupTasks = computed(() => {
   const q = props.searchQuery.trim().toLowerCase();
   return taskList.value
     .filter((t) => {
-      if (t.groupId !== props.groupId) return false;
+      if (t.countdownOnly || t.groupId !== props.groupId) return false;
       if (q && !t.title.toLowerCase().includes(q) && !t.notes?.toLowerCase().includes(q)) return false;
       return true;
     })
@@ -83,10 +143,13 @@ const resourceTasks = computed(() =>
 
 const groupHex = computed(() => taskColor(group.value?.color, isDark.value).bar);
 
-function startEditName() {
+async function startEditName() {
   if (!group.value) return;
   nameDraft.value = group.value.name;
   editingName.value = true;
+  await nextTick();
+  nameInputRef.value?.focus();
+  nameInputRef.value?.select();
 }
 
 async function commitName() {
@@ -98,25 +161,45 @@ async function commitName() {
   }
 }
 
-function pickColor(e: MouseEvent) {
+const areaPreview = ref<{ icon?: string; iconOverride?: boolean; color?: string } | null>(null);
+const displayGroupHex = computed(() =>
+  taskColor(areaPreview.value?.color || group.value?.color, isDark.value).bar,
+);
+const displayGroupIcon = computed(() =>
+  areaPreview.value?.iconOverride ? areaPreview.value.icon : group.value?.icon,
+);
+
+function pickAppearance(e: MouseEvent) {
   if (!group.value) return;
   const g = group.value;
   const anchor = e.currentTarget as HTMLElement;
+  const reset = () => {
+    areaPreview.value = null;
+  };
+  const { iconItems, colorItems } = buildGroupCustomizeChildren(g, {
+    onPreviewIcon: (k) => (areaPreview.value = { icon: k, iconOverride: true }),
+    onPreviewColor: (c) => (areaPreview.value = { color: c }),
+    onResetPreview: reset,
+  });
   void showMenu(
     [
+      { key: 'icon', label: '分组图标…', children: iconItems },
+      { key: 'color', label: '分组颜色…', children: colorItems },
+      { separator: true },
       {
-        swatches: TASK_COLORS.map((c) => ({
-          key: c.key,
-          color: c.bar,
-          title: c.label,
-          selected: g.color === c.key,
-        })),
-        onSwatch: (k) => void saveGroup({ ...g, color: k || 'blue' }),
+        key: 'divider',
+        label: g.dividerAfter ? '移除侧栏分隔线' : '在侧栏添加分隔线',
+        onHover: reset,
+        action: () => void saveGroup({ ...g, dividerAfter: !g.dividerAfter || undefined }),
       },
     ],
     anchor,
-    { placement: 'bottom-start' },
+    { placement: 'bottom-start', onClose: reset },
   );
+}
+
+function openAreaTaskMenu(t: Task, e: MouseEvent) {
+  void openTaskContextMenu(t, { x: e.clientX, y: e.clientY }, { onOpen: () => emit('openTask', t.id) });
 }
 
 async function addGroupTask() {
@@ -146,6 +229,69 @@ function toggleTask(t: Task) {
   });
 }
 
+const depGraph = computed(() => buildDependencyGraph(taskList.value));
+const expandedSection = ref<Record<string, 'sub' | 'blocked' | null>>({});
+
+function toggleExpand(taskId: string, which: 'sub' | 'blocked') {
+  expandedSection.value[taskId] = expandedSection.value[taskId] === which ? null : which;
+}
+
+function blockerTasksOf(t: Task): Task[] {
+  return depGraph.value.blockedBy.get(t.id) ?? [];
+}
+
+function setAreaTaskStatus(t: Task, next: TaskStatus) {
+  if (flexKind(t) || t.repeat) {
+    const isDone = effectiveWorkspaceStatus(t) === 'done';
+    if ((next === 'done') !== isDone) toggleTask(t);
+    return;
+  }
+  void saveTask(applyTaskStatus(t, next));
+}
+
+function openStatusPicker(t: Task, e: MouseEvent) {
+  const st = effectiveWorkspaceStatus(t);
+  const items: MenuItem[] = WORKSPACE_STATUS_ORDER.map((s) => ({
+    label: STATUS_META[s].label,
+    colorDot: STATUS_DOT_COLOR[s],
+    radio: true,
+    checked: st === s,
+    action: () => setAreaTaskStatus(t, s),
+  }));
+  void showMenu(items, e.currentTarget as HTMLElement, { placement: 'bottom-start' });
+}
+
+function openPriorityPicker(t: Task, e: MouseEvent) {
+  const cur = effectivePriority(t);
+  const items: MenuItem[] = PRIORITY_ORDER.map((p) => ({
+    label: PRIORITY_META[p].label,
+    colorDot: PRIORITY_META[p].color,
+    radio: true,
+    checked: cur === p,
+    action: () => void saveTask({ ...t, priority: p === 'none' ? undefined : p }),
+  }));
+  void showMenu(items, e.currentTarget as HTMLElement, { placement: 'bottom-start' });
+}
+
+function toggleStar(t: Task) {
+  void saveTask({ ...t, starred: !t.starred || undefined });
+}
+
+function toggleSubStep(t: Task, itemId: string) {
+  if (!t.checklist) return;
+  const next = t.checklist.map((item) => (item.id === itemId ? { ...item, done: !item.done } : item));
+  void saveTask(applyChecklist(t, next));
+}
+
+function onBlockerEnter(blocker: Task, e: MouseEvent) {
+  showTaskPreview(blocker, e.currentTarget as HTMLElement);
+}
+
+function openBlockerRow(blocker: Task) {
+  cancelTaskPreview();
+  emit('openTask', blocker.id);
+}
+
 function openExternal(url: string) {
   if (/^https?:\/\//i.test(url)) {
     void call('open_url', { url });
@@ -157,18 +303,24 @@ function openExternal(url: string) {
 
 <template>
   <div v-if="group" class="area-page">
-    <div class="area-head ws-container">
+    <div class="area-head ws-container" :class="{ compact: subTab === 'tasks' }">
       <div class="ws-eyebrow">分组空间</div>
       <div class="area-title-row">
-        <button type="button" class="area-color-btn" title="更换分组颜色" @click="pickColor">
-          <span class="area-dot" :style="{ background: groupHex }" />
+        <button
+          type="button"
+          class="area-color-btn"
+          :style="{ color: displayGroupHex }"
+          title="更换分组图标与颜色"
+          @click="pickAppearance"
+        >
+          <FGroupIcon :icon="displayGroupIcon" :color="displayGroupHex" :size="15" />
         </button>
         <input
           v-if="editingName"
+          ref="nameInputRef"
           v-model="nameDraft"
           type="text"
           class="area-name-input"
-          autofocus
           @keydown.enter.prevent="commitName"
           @keydown.esc.stop="editingName = false"
           @blur="commitName"
@@ -178,18 +330,25 @@ function openExternal(url: string) {
       <p class="ws-page-sub">{{ openTasks.length }} 项待办 · {{ completedTasks.length }} 项已完成 · {{ resourceTasks.length }} 条笔记与资料</p>
 
       <!-- Folio Underline Sub-tabs -->
-      <nav class="area-tabs" role="tablist">
-        <button type="button" class="at-btn" :class="{ active: subTab === 'overview' }" @click="subTab = 'overview'">
+      <nav ref="tabsRef" class="area-tabs" role="tablist">
+        <span
+          v-if="tabVisible"
+          class="ws-slide-underline at-underline"
+          :class="{ 'no-anim': !tabReady }"
+          :style="tabStyle"
+          aria-hidden="true"
+        />
+        <button type="button" class="at-btn" :class="{ active: subTab === 'overview' }" @click="setSubTab('overview')">
           概览
         </button>
-        <button type="button" class="at-btn" :class="{ active: subTab === 'tasks' }" @click="subTab = 'tasks'">
+        <button type="button" class="at-btn" :class="{ active: subTab === 'tasks' }" @click="setSubTab('tasks')">
           <span>待办</span>
           <span class="at-count">{{ openTasks.length }}</span>
         </button>
-        <button type="button" class="at-btn" :class="{ active: subTab === 'calendar' }" @click="subTab = 'calendar'">
+        <button type="button" class="at-btn" :class="{ active: subTab === 'calendar' }" @click="setSubTab('calendar')">
           日历
         </button>
-        <button type="button" class="at-btn" :class="{ active: subTab === 'resources' }" @click="subTab = 'resources'">
+        <button type="button" class="at-btn" :class="{ active: subTab === 'resources' }" @click="setSubTab('resources')">
           <span>资料</span>
           <span class="at-count">{{ resourceTasks.length }}</span>
         </button>
@@ -202,10 +361,16 @@ function openExternal(url: string) {
         <div class="ao-col">
           <div class="ao-sec-head">近期笔记与进展</div>
           <div v-if="noteCards.length" class="ao-notes-grid">
-            <div v-for="t in noteCards" :key="t.id" class="ws-card ao-note-card" @click="emit('openTask', t.id)">
+            <div
+              v-for="t in noteCards"
+              :key="t.id"
+              class="ws-card ao-note-card"
+              @click="emit('openTask', t.id)"
+              @contextmenu.prevent="openAreaTaskMenu(t, $event)"
+            >
               <div class="anc-top">
                 <span class="anc-title">{{ t.title }}</span>
-                <span class="anc-time">{{ relativeTimeLabel(t.updatedAt || t.createdAt, Date.now()) }}</span>
+                <span class="anc-time">{{ relativeTimeLabel(t.updatedAt || t.createdAt, nowTick) }}</span>
               </div>
               <p v-if="t.notes" class="anc-body">{{ t.notes }}</p>
               <div v-if="t.checklist?.length" class="anc-chk">
@@ -227,17 +392,93 @@ function openExternal(url: string) {
               <input v-model="quickTitle" type="text" class="ao-q-input" :placeholder="`添加到「${group.name}」…`" />
             </form>
             <div v-if="openTasks.length" class="ao-task-list">
-              <div v-for="t in openTasks" :key="t.id" class="ao-task-row" @click="emit('openTask', t.id)">
-                <button
-                  type="button"
-                  class="ws-check-circle"
-                  :class="{ 'in-progress': effectiveStatus(t) === 'in_progress' }"
-                  @click.stop="toggleTask(t)"
+              <div v-for="t in openTasks" :key="t.id" class="ao-task-item">
+                <div
+                  class="ao-task-row"
+                  @click="emit('openTask', t.id)"
+                  @contextmenu.prevent="openAreaTaskMenu(t, $event)"
                 >
-                  <svg viewBox="0 0 12 12"><path d="M2.5 6.3 5 8.8 9.5 3.6" /></svg>
-                </button>
-                <span class="ao-t-title">{{ t.title }}</span>
-                <span class="ao-t-date">{{ t.flex ? '不定日' : formatFriendly(t.start, now) }}</span>
+                  <button
+                    type="button"
+                    class="ao-glyph-btn"
+                    :title="STATUS_META[effectiveWorkspaceStatus(t)].label"
+                    @click.stop="openStatusPicker(t, $event)"
+                  >
+                    <StatusGlyph :status="effectiveWorkspaceStatus(t)" :size="15" interactive />
+                  </button>
+                  <div class="ao-t-main">
+                    <span class="ao-t-title">{{ t.title }}</span>
+                    <div v-if="t.checklist?.length || blockerTasksOf(t).length" class="ao-disc-row">
+                      <button
+                        v-if="t.checklist?.length"
+                        type="button"
+                        class="ao-disc-pill"
+                        :class="{ expanded: expandedSection[t.id] === 'sub' }"
+                        @click.stop="toggleExpand(t.id, 'sub')"
+                      >
+                        <span>子步骤 {{ checklistStats(t.checklist).done }}/{{ t.checklist.length }}</span>
+                        <FIcon :name="expandedSection[t.id] === 'sub' ? 'chevronDown' : 'chevronRight'" :size="9" />
+                      </button>
+                      <button
+                        v-if="blockerTasksOf(t).length"
+                        type="button"
+                        class="ao-disc-pill blocked"
+                        :class="{ expanded: expandedSection[t.id] === 'blocked' }"
+                        @click.stop="toggleExpand(t.id, 'blocked')"
+                      >
+                        <span class="ao-blk-dot" />
+                        <span>被阻塞 {{ blockerTasksOf(t).length }}</span>
+                        <FIcon :name="expandedSection[t.id] === 'blocked' ? 'chevronDown' : 'chevronRight'" :size="9" />
+                      </button>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    class="ao-prio-btn"
+                    :title="PRIORITY_META[effectivePriority(t)].label"
+                    @click.stop="openPriorityPicker(t, $event)"
+                  >
+                    <PriorityGlyph :priority="effectivePriority(t)" :size="13" />
+                  </button>
+                  <button
+                    type="button"
+                    class="ao-star-btn"
+                    :class="{ active: !!t.starred }"
+                    :title="t.starred ? '取消星标置顶' : '加入星标置顶'"
+                    @click.stop="toggleStar(t)"
+                  >
+                    {{ t.starred ? '★' : '☆' }}
+                  </button>
+                  <span class="ao-t-date">{{ t.flex ? '不定日' : formatFriendly(t.start, now) }}</span>
+                </div>
+
+                <div v-if="expandedSection[t.id] === 'sub' && t.checklist?.length" class="ao-exp-tree">
+                  <button
+                    v-for="item in t.checklist"
+                    :key="item.id"
+                    type="button"
+                    class="ao-exp-row"
+                    :class="{ done: item.done }"
+                    @click.stop="toggleSubStep(t, item.id)"
+                  >
+                    <span class="ao-sub-chk" :class="{ checked: item.done }">{{ item.done ? '✓' : '' }}</span>
+                    <span class="ao-exp-title">{{ item.text }}</span>
+                  </button>
+                </div>
+
+                <div v-else-if="expandedSection[t.id] === 'blocked' && blockerTasksOf(t).length" class="ao-exp-tree">
+                  <div
+                    v-for="b in blockerTasksOf(t)"
+                    :key="b.id"
+                    class="ao-exp-row"
+                    @mouseenter="onBlockerEnter(b, $event)"
+                    @mouseleave="hideTaskPreview"
+                    @click.stop="openBlockerRow(b)"
+                  >
+                    <StatusGlyph :status="effectiveWorkspaceStatus(b)" :size="12" />
+                    <span class="ao-exp-title">{{ b.title }}</span>
+                  </div>
+                </div>
               </div>
             </div>
             <div v-else class="ao-empty-inline">全部完成！</div>
@@ -246,52 +487,31 @@ function openExternal(url: string) {
       </div>
     </div>
 
-    <!-- Group Tasks Tab -->
-    <div v-else-if="subTab === 'tasks'" class="ws-scroll-page">
-      <div class="ws-container area-tasks-col">
-        <form class="ws-card ao-quick" @submit.prevent="addGroupTask">
-          <FIcon name="add" :size="12" class="ao-q-ico" />
-          <input v-model="quickTitle" type="text" class="ao-q-input" :placeholder="`添加到「${group.name}」并回车创建…`" />
-        </form>
-
-        <div v-if="openTasks.length" class="ws-card ao-task-list">
-          <div v-for="t in openTasks" :key="t.id" class="ao-task-row" @click="emit('openTask', t.id)">
-            <button
-              type="button"
-              class="ws-check-circle"
-              :class="{ 'in-progress': effectiveStatus(t) === 'in_progress' }"
-              @click.stop="toggleTask(t)"
-            >
-              <svg viewBox="0 0 12 12"><path d="M2.5 6.3 5 8.8 9.5 3.6" /></svg>
-            </button>
-            <span class="ao-t-title">{{ t.title }}</span>
-            <span v-if="effectiveStatus(t) === 'in_progress'" class="ao-badge">进行中</span>
-            <span class="ao-t-date">{{ t.flex ? '不定日' : formatFriendly(t.start, now) }}</span>
-          </div>
-        </div>
-
-        <div v-if="completedTasks.length" class="ao-done-wrap">
-          <button type="button" class="ao-done-toggle" @click="showDone = !showDone">
-            <FIcon :name="showDone ? 'chevronDown' : 'chevronRight'" :size="10" />
-            <span>已完成 ({{ completedTasks.length }})</span>
-          </button>
-          <div v-if="showDone" class="ws-card ao-task-list">
-            <div v-for="t in completedTasks" :key="t.id" class="ao-task-row done" @click="emit('openTask', t.id)">
-              <button type="button" class="ws-check-circle done" @click.stop="toggleTask(t)">
-                <svg viewBox="0 0 12 12"><path d="M2.5 6.3 5 8.8 9.5 3.6" /></svg>
-              </button>
-              <span class="ao-t-title">{{ t.title }}</span>
-              <span class="ao-t-date">{{ formatFriendly(t.end, now) }}</span>
-            </div>
-          </div>
-        </div>
-      </div>
+    <!-- Group Tasks Tab (Embedded 1:1 Tegon TasksView) -->
+    <div v-else-if="subTab === 'tasks'" class="area-tasks-host">
+      <TasksView
+        :scoped-group-id="group.id"
+        :search-query="searchQuery"
+        filter-group-id=""
+        @update:search-query="onTasksSearchUpdate"
+        @open-task="onTasksOpenTask"
+      />
     </div>
 
     <!-- Reused Group-Scoped Month Calendar Tab -->
     <div v-else-if="subTab === 'calendar'" class="area-cal-wrap ws-container">
       <div class="area-cal-bar">
-        <span class="acb-title">{{ viewTitle() }}</span>
+        <button
+          ref="calTitleRef"
+          type="button"
+          class="acb-title-btn"
+          title="点击切换年份与月份"
+          @click="ymOpen = !ymOpen"
+        >
+          <span>{{ viewTitle() }}</span>
+          <FIcon name="chevronDown" :size="10" />
+        </button>
+        <YearMonthPicker v-model:open="ymOpen" :anchor="calTitleRef" />
         <div class="acb-btns">
           <button type="button" class="ws-icon-circle solid" @click="page(-1)"><FIcon name="chevronLeft" :size="11" /></button>
           <button type="button" class="acb-today" @click="goToday()">今天</button>
@@ -306,7 +526,13 @@ function openExternal(url: string) {
     <!-- Resources & Documents Tab -->
     <div v-else class="ws-scroll-page">
       <div class="ws-container res-grid">
-        <div v-for="t in resourceTasks" :key="t.id" class="ws-card res-card" @click="emit('openTask', t.id)">
+        <div
+          v-for="t in resourceTasks"
+          :key="t.id"
+          class="ws-card res-card"
+          @click="emit('openTask', t.id)"
+          @contextmenu.prevent="openAreaTaskMenu(t, $event)"
+        >
           <div class="res-title">{{ t.title }}</div>
           <p v-if="t.notes" class="res-notes">{{ t.notes }}</p>
           <div v-if="t.links?.length" class="res-links" @click.stop>
@@ -348,6 +574,32 @@ function openExternal(url: string) {
 .area-head {
   flex: none;
   padding: 6px 8px 0;
+}
+
+.area-head.compact {
+  padding-top: 2px;
+}
+
+.area-head.compact .ws-page-sub {
+  margin-top: 2px;
+  font-size: 12px;
+}
+
+.area-head.compact .area-tabs {
+  margin-top: 8px;
+}
+
+.area-tasks-host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  max-width: 980px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 6px 8px 0;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .area-title-row {
@@ -392,6 +644,7 @@ function openExternal(url: string) {
 }
 
 .area-tabs {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 18px;
@@ -399,8 +652,17 @@ function openExternal(url: string) {
   border-bottom: 1px solid var(--ws-hairline);
 }
 
+.at-underline {
+  top: auto;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--ws-ink);
+}
+
 .at-btn {
   position: relative;
+  z-index: 1;
   border: 0;
   background: transparent;
   padding: 8px 2px 10px;
@@ -422,17 +684,6 @@ function openExternal(url: string) {
 .at-btn.active {
   color: var(--ws-ink);
   font-weight: 650;
-}
-
-.at-btn.active::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: -1px;
-  height: 2px;
-  border-radius: 2px;
-  background: var(--ws-ink);
 }
 
 .at-count {
@@ -552,17 +803,20 @@ function openExternal(url: string) {
   overflow: hidden;
 }
 
+.ao-task-item {
+  border-bottom: 1px solid var(--ws-hairline);
+}
+
+.ao-task-item:last-child {
+  border-bottom: 0;
+}
+
 .ao-task-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 13px;
-  border-bottom: 1px solid var(--ws-hairline);
+  gap: 9px;
+  padding: 9px 13px;
   cursor: pointer;
-}
-
-.ao-task-row:last-child {
-  border-bottom: 0;
 }
 
 .ao-task-row:hover {
@@ -574,11 +828,170 @@ function openExternal(url: string) {
   color: var(--ws-ink-muted);
 }
 
-.ao-t-title {
+.ao-glyph-btn,
+.ao-prio-btn,
+.ao-star-btn {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex: none;
+  border-radius: 6px;
+}
+
+.ao-glyph-btn {
+  width: 22px;
+  height: 22px;
+}
+
+.ao-prio-btn {
+  width: 22px;
+  height: 22px;
+  opacity: 0.72;
+  transition: opacity 120ms ease, background-color 120ms ease;
+}
+
+.ao-task-row:hover .ao-prio-btn,
+.ao-prio-btn:hover {
+  opacity: 1;
+  background: var(--ws-stone-pill);
+}
+
+.ao-star-btn {
+  width: 22px;
+  height: 22px;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--ws-ink-muted);
+  opacity: 0;
+  transition: opacity 120ms ease, color 120ms ease, background-color 120ms ease;
+}
+
+.ao-task-row:hover .ao-star-btn,
+.ao-star-btn.active {
+  opacity: 1;
+}
+
+.ao-star-btn.active {
+  color: #D97706;
+}
+
+.ao-star-btn:hover {
+  background: var(--ws-stone-pill);
+}
+
+.ao-t-main {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ao-t-title {
   font-size: 13px;
   font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ao-disc-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ao-disc-pill {
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 6px;
+  border: 1px solid var(--ws-hairline);
+  background: var(--ws-stone-pill);
+  color: var(--ws-ink-secondary);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 550;
+  cursor: pointer;
+}
+
+.ao-disc-pill:hover,
+.ao-disc-pill.expanded {
+  background: var(--ws-stone-pill-hover);
+  color: var(--ws-ink);
+}
+
+.ao-blk-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #E5484D;
+  flex: none;
+}
+
+.ao-exp-tree {
+  padding: 2px 13px 9px 44px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  background: var(--ws-card-subtle);
+}
+
+.ao-exp-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ws-ink-secondary);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ao-exp-row:hover {
+  background: var(--ws-stone-pill);
+  color: var(--ws-ink);
+}
+
+.ao-exp-row.done .ao-exp-title {
+  text-decoration: line-through;
+  color: var(--ws-ink-muted);
+}
+
+.ao-sub-chk {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  border: 1.5px solid var(--ws-hairline-strong);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  line-height: 1;
+  color: #FFFFFF;
+  flex: none;
+}
+
+.ao-sub-chk.checked {
+  background: #107C10;
+  border-color: #107C10;
+}
+
+.ao-exp-title {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -588,9 +1001,15 @@ function openExternal(url: string) {
   font-size: 11px;
   padding: 2px 7px;
   border-radius: 999px;
-  background: rgba(181, 71, 13, 0.12);
-  color: #9A3B08;
+  background: var(--ws-progress-bg);
+  color: var(--ws-progress-ink);
   font-weight: 600;
+  flex: none;
+}
+
+.ao-badge.in_review {
+  background: var(--ws-pill-review-bg);
+  color: var(--ws-pill-review-ink);
 }
 
 .ao-t-date {
@@ -653,9 +1072,25 @@ function openExternal(url: string) {
   padding: 0 4px;
 }
 
-.acb-title {
+.acb-title-btn {
+  height: 28px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ws-ink);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: inherit;
   font-size: 14px;
   font-weight: 650;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.acb-title-btn:hover {
+  background: var(--ws-pill-bg);
 }
 
 .acb-btns {
@@ -753,5 +1188,47 @@ function openExternal(url: string) {
   margin: auto;
   padding: 28px 36px;
   text-align: center;
+}
+
+@media (max-width: 820px) {
+  .area-overview {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 639px) {
+  .area-head {
+    padding: 2px 4px 0;
+  }
+
+  .area-tabs {
+    overflow-x: auto;
+    scrollbar-width: none;
+    white-space: nowrap;
+    gap: 14px;
+    margin-top: 10px;
+  }
+
+  .area-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .at-btn {
+    flex: none;
+  }
+
+  .area-tasks-host {
+    padding: 4px 2px 0;
+  }
+
+  .area-cal-wrap {
+    padding-bottom: calc(74px + env(safe-area-inset-bottom));
+  }
+}
+
+@media (hover: none) {
+  .ao-star-btn {
+    opacity: 0.72;
+  }
 }
 </style>

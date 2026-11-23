@@ -26,7 +26,8 @@ export interface RepeatRule {
   until?: ISODate;
 }
 
-export type TaskStatus = 'todo' | 'in_progress' | 'done';
+export type TaskStatus = 'backlog' | 'todo' | 'in_progress' | 'in_review' | 'done';
+export type TaskPriority = 'none' | 'low' | 'medium' | 'high' | 'urgent';
 
 export interface TaskCheckItem {
   id: string;
@@ -57,6 +58,10 @@ export interface Task {
   duration?: number;
   /** Workflow status synced with `done` and `progress`. */
   status?: TaskStatus;
+  /** Optional priority tier shown in Tegon-style workspace lists and filter bar. */
+  priority?: TaskPriority;
+  /** Pinned into the Workspace Starred section for quick access and hover preview. */
+  starred?: boolean;
   /** Structured subtasks rendered as a connected checklist in Workspace Inspector. */
   checklist?: TaskCheckItem[];
   /** Related URLs or local paths shown in Workspace Inspector. */
@@ -84,6 +89,12 @@ export interface Task {
   exDates?: ISODate[];
   /** Show "N days until" at the bottom of the calendar. */
   countdown?: boolean;
+  /** Standalone custom countdown (kept hidden from todo lists / inbox / gantt / calendar grid). */
+  countdownOnly?: boolean;
+  /** 'down' = countdown to target; 'up' = elapsed days anniversary counter. */
+  countdownMode?: CountdownMode;
+  /** Pin this countdown to the front of CountdownBar and Workspace spotlight. */
+  countdownPinned?: boolean;
   /** Overrides settings.tasks.autoPostpone for this task. */
   autoPostpone?: boolean;
   /** First-run sample data ("清除示例数据" removes it); dropped once the user renames it. */
@@ -97,6 +108,10 @@ export interface Group {
   id: string;
   name: string;
   color: string;
+  /** Optional monoline icon key from src/lib/groupIcons. */
+  icon?: string;
+  /** Render a thin separator line after this group in sidebars. */
+  dividerAfter?: boolean;
   collapsed?: boolean;
   /** First-run sample data. */
   sample?: boolean;
@@ -117,6 +132,7 @@ export type ThemeMode = 'system' | 'light' | 'dark';
 export type PinMode = 'desktop' | 'top' | 'normal';
 export type CalendarView = 'day' | 'multiday' | 'month' | 'weeks' | 'gantt' | 'list';
 export type GanttScale = 'day' | 'week' | 'month';
+export type CountdownMode = 'down' | 'up';
 
 export interface Settings {
   /** onboarded: the first-run welcome bar was dismissed (or the samples cleared). */

@@ -5,27 +5,44 @@ export const SIDEBAR_DEFAULT = 324;
 export const SIDEBAR_MAX = 420;
 export const SIDEBAR_COLLAPSE_AT = 175;
 
+export interface SidebarSpringBounds {
+  min: number;
+  defaultWidth: number;
+  max: number;
+  collapseAt: number;
+}
+
+export const DEFAULT_SIDEBAR_BOUNDS: SidebarSpringBounds = {
+  min: SIDEBAR_MIN,
+  defaultWidth: SIDEBAR_DEFAULT,
+  max: SIDEBAR_MAX,
+  collapseAt: SIDEBAR_COLLAPSE_AT,
+};
+
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
 /**
  * Maps raw pointer-dragged width through the video's magnetic detent & elastic collapse/edge
  * resistance fields:
- * - > MAX: rubber-band resistance
- * - [COLLAPSE_AT, MIN): elastic snap-back resistance before collapsing
- * - < COLLAPSE_AT: collapses inward toward 0
- * - [MIN, MAX]: Gaussian magnetic detent well centered on SIDEBAR_DEFAULT
+ * - > max: rubber-band resistance
+ * - [collapseAt, min): elastic snap-back resistance before collapsing
+ * - < collapseAt: collapses inward toward 0
+ * - [min, max]: Gaussian magnetic detent well centered on defaultWidth
  */
-export function applyDragField(rawW: number): { target: number; willCollapse: boolean; nearDetent: boolean } {
-  if (rawW > SIDEBAR_MAX) {
-    return { target: SIDEBAR_MAX + (rawW - SIDEBAR_MAX) * 0.22, willCollapse: false, nearDetent: false };
+export function applyDragField(
+  rawW: number,
+  bounds: SidebarSpringBounds = DEFAULT_SIDEBAR_BOUNDS,
+): { target: number; willCollapse: boolean; nearDetent: boolean } {
+  if (rawW > bounds.max) {
+    return { target: bounds.max + (rawW - bounds.max) * 0.22, willCollapse: false, nearDetent: false };
   }
-  if (rawW < SIDEBAR_COLLAPSE_AT) {
+  if (rawW < bounds.collapseAt) {
     return { target: Math.max(0, rawW * 0.35), willCollapse: true, nearDetent: false };
   }
-  if (rawW < SIDEBAR_MIN) {
-    return { target: SIDEBAR_MIN - (SIDEBAR_MIN - rawW) * 0.42, willCollapse: false, nearDetent: false };
+  if (rawW < bounds.min) {
+    return { target: bounds.min - (bounds.min - rawW) * 0.42, willCollapse: false, nearDetent: false };
   }
-  const d = rawW - SIDEBAR_DEFAULT;
+  const d = rawW - bounds.defaultWidth;
   const pull = -d * 0.34 * Math.exp(-(d * d) / (2 * 20 * 20));
   return {
     target: rawW + pull,
@@ -35,14 +52,18 @@ export function applyDragField(rawW: number): { target: number; willCollapse: bo
 }
 
 /** Determines final open state and committed width on pointer release using position + flick velocity. */
-export function resolveReleaseTarget(rawW: number, velX: number): { open: boolean; width: number } {
-  if (rawW < SIDEBAR_COLLAPSE_AT || (rawW < SIDEBAR_MIN && velX < -420)) {
+export function resolveReleaseTarget(
+  rawW: number,
+  velX: number,
+  bounds: SidebarSpringBounds = DEFAULT_SIDEBAR_BOUNDS,
+): { open: boolean; width: number } {
+  if (rawW < bounds.collapseAt || (rawW < bounds.min && velX < -420)) {
     return { open: false, width: 0 };
   }
-  if (Math.abs(rawW - SIDEBAR_DEFAULT) < 22 && Math.abs(velX) < 350) {
-    return { open: true, width: SIDEBAR_DEFAULT };
+  if (Math.abs(rawW - bounds.defaultWidth) < 22 && Math.abs(velX) < 350) {
+    return { open: true, width: bounds.defaultWidth };
   }
-  return { open: true, width: Math.round(clamp(rawW, SIDEBAR_MIN, SIDEBAR_MAX)) };
+  return { open: true, width: Math.round(clamp(rawW, bounds.min, bounds.max)) };
 }
 
 /** Frame-rate independent semi-implicit Euler damped spring step. */
@@ -65,11 +86,13 @@ export interface SidebarSpringOptions {
   isOpen: () => boolean;
   savedWidth: () => number;
   reduceMotion: () => boolean;
+  bounds?: Partial<SidebarSpringBounds>;
   onCommit: (open: boolean, width?: number) => void;
 }
 
 export function useSidebarSpring(opts: SidebarSpringOptions) {
-  const initialW = opts.isOpen() ? clamp(opts.savedWidth() || SIDEBAR_DEFAULT, SIDEBAR_MIN, SIDEBAR_MAX) : 0;
+  const b: SidebarSpringBounds = { ...DEFAULT_SIDEBAR_BOUNDS, ...opts.bounds };
+  const initialW = opts.isOpen() ? clamp(opts.savedWidth() || b.defaultWidth, b.min, b.max) : 0;
   const width = ref(initialW);
   const dragging = ref(false);
   const willCollapse = ref(false);
@@ -130,7 +153,7 @@ export function useSidebarSpring(opts: SidebarSpringOptions) {
 
   function animateTo(open: boolean, targetW?: number) {
     if (dragging.value) return;
-    const dest = open ? clamp(targetW ?? (opts.savedWidth() || SIDEBAR_DEFAULT), SIDEBAR_MIN, SIDEBAR_MAX) : 0;
+    const dest = open ? clamp(targetW ?? (opts.savedWidth() || b.defaultWidth), b.min, b.max) : 0;
     target = dest;
     if (Math.abs(spring.x - dest) < 0.25 && Math.abs(spring.v) < 2) {
       spring.x = dest;
@@ -144,7 +167,7 @@ export function useSidebarSpring(opts: SidebarSpringOptions) {
 
   function snapTo(open: boolean, targetW?: number) {
     stopLoop();
-    const dest = open ? clamp(targetW ?? (opts.savedWidth() || SIDEBAR_DEFAULT), SIDEBAR_MIN, SIDEBAR_MAX) : 0;
+    const dest = open ? clamp(targetW ?? (opts.savedWidth() || b.defaultWidth), b.min, b.max) : 0;
     target = dest;
     spring.x = dest;
     spring.v = 0;
@@ -162,7 +185,7 @@ export function useSidebarSpring(opts: SidebarSpringOptions) {
     lastMoveAt = nowMs;
 
     rawW = startW + (e.clientX - startX);
-    const field = applyDragField(rawW);
+    const field = applyDragField(rawW, b);
     target = field.target;
     willCollapse.value = field.willCollapse;
     nearDetent.value = field.nearDetent;
@@ -185,13 +208,13 @@ export function useSidebarSpring(opts: SidebarSpringOptions) {
     cleanupDragListeners();
 
     if (cancelled) {
-      const revert = opts.isOpen() ? clamp(opts.savedWidth() || SIDEBAR_DEFAULT, SIDEBAR_MIN, SIDEBAR_MAX) : 0;
+      const revert = opts.isOpen() ? clamp(opts.savedWidth() || b.defaultWidth, b.min, b.max) : 0;
       target = revert;
       ensureLoop();
       return;
     }
 
-    const res = resolveReleaseTarget(rawW, velX);
+    const res = resolveReleaseTarget(rawW, velX, b);
     spring.v = clamp(velX * 0.35, -1800, 1800);
     target = res.width;
     ensureLoop();
@@ -226,9 +249,9 @@ export function useSidebarSpring(opts: SidebarSpringOptions) {
   }
 
   function onDividerDblClick() {
-    target = SIDEBAR_DEFAULT;
+    target = b.defaultWidth;
     ensureLoop();
-    opts.onCommit(true, SIDEBAR_DEFAULT);
+    opts.onCommit(true, b.defaultWidth);
   }
 
   function dispose() {

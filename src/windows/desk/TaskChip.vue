@@ -9,7 +9,7 @@ import { now } from '@/composables/now';
 import { barLabel, occDoneDay } from '@/lib/bar';
 import { formatFriendly, formatRange } from '@/lib/date';
 import { describeRule } from '@/lib/recur';
-import { ui } from './state';
+import { spotlightStateOf, ui } from './state';
 import { parseRgba } from '@/lib/rgba';
 import { mix, normalizeHex } from '@/fluent/theme';
 import { colorOpacity, setColorOpacity } from '@/lib/rgba';
@@ -25,6 +25,7 @@ const emit = defineEmits<{
 
 const occ = computed(() => props.chip.occ);
 const task = computed(() => occ.value.task);
+const spotlight = computed(() => spotlightStateOf(task.value));
 const groupColor = computed(() => task.value.groupId ? doc.groups[task.value.groupId]?.color : undefined);
 const colors = computed(() => taskColor(task.value.color || groupColor.value, isDark.value));
 
@@ -119,6 +120,8 @@ function onChipClick() {
       'cont-r': chip.contRight,
       dragging,
       milestone: task.milestone,
+      'sf-dimmed': !props.dragging && spotlight === 'dimmed',
+      'sf-dissolved': !props.dragging && spotlight === 'dissolved',
     }"
     :style="style"
     tabindex="0"
@@ -180,7 +183,11 @@ function onChipClick() {
   overflow: hidden;
   white-space: nowrap;
   outline-offset: -1px;
-  transition: background-color var(--dur-fast) var(--ease);
+  transition:
+    background-color var(--dur-fast) var(--ease),
+    filter 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 .chip:hover {
   background: var(--subtle-fill-hover);
@@ -309,5 +316,27 @@ function onChipClick() {
 }
 .bar.milestone .title::before {
   color: inherit;
+}
+
+.chip.sf-dimmed {
+  filter: grayscale(1) saturate(0.08);
+  opacity: 0.45;
+}
+
+.chip.sf-dissolved {
+  filter: grayscale(1) blur(6px);
+  opacity: 0;
+  transform: scale(0.94);
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chip {
+    transition: opacity 80ms linear !important;
+  }
+  .chip.sf-dissolved {
+    filter: none;
+    transform: none;
+  }
 }
 </style>

@@ -4,7 +4,7 @@ import { flexKind, MONTH, monthSlot, slotDone, SOMEDAY_SLOT } from '@/lib/flex';
 import { occurrenceOn, occurrences } from '@/lib/recur';
 import { effectiveStatus } from '@/lib/taskMeta';
 
-export type WorkspacePageKind = 'daily' | 'calendar' | 'inbox' | 'tasks' | 'gantt' | 'area' | 'settings';
+export type WorkspacePageKind = 'daily' | 'calendar' | 'inbox' | 'tasks' | 'gantt' | 'countdowns' | 'area' | 'settings';
 
 export interface WorkspaceTab {
   id: string;
@@ -68,7 +68,45 @@ export function closeTab(
   return { tabs: remaining, activeId: nextActive.id };
 }
 
-const VALID_KINDS: WorkspacePageKind[] = ['daily', 'calendar', 'inbox', 'tasks', 'gantt', 'area', 'settings'];
+/** Cycles through open tabs (`Ctrl+Tab` / `Ctrl+Shift+Tab`), wrapping at ends. */
+export function cycleTabId(tabs: WorkspaceTab[], activeId: string, delta: 1 | -1): string {
+  if (!tabs.length) return activeId;
+  const idx = tabs.findIndex((t) => t.id === activeId);
+  if (idx === -1) {
+    return delta > 0 ? tabs[0].id : tabs[tabs.length - 1].id;
+  }
+  const nextIdx = (idx + delta + tabs.length) % tabs.length;
+  return tabs[nextIdx].id;
+}
+
+/** Keeps only `keepId` (and any non-closable tabs). */
+export function closeOtherTabs(
+  tabs: WorkspaceTab[],
+  keepId: string,
+): { tabs: WorkspaceTab[]; activeId: string } {
+  const remaining = tabs.filter((t) => t.id === keepId || t.closable === false);
+  if (!remaining.length) {
+    const fallback = { id: 'tab:daily', kind: 'daily' as const, title: '今日聚焦', closable: true };
+    return { tabs: [fallback], activeId: fallback.id };
+  }
+  const nextActive = remaining.some((t) => t.id === keepId) ? keepId : remaining[0].id;
+  return { tabs: remaining, activeId: nextActive };
+}
+
+/** Closes tabs appearing to the right of `pivotId` (preserving non-closable tabs). */
+export function closeTabsToRight(
+  tabs: WorkspaceTab[],
+  pivotId: string,
+  activeId: string,
+): { tabs: WorkspaceTab[]; activeId: string } {
+  const idx = tabs.findIndex((t) => t.id === pivotId);
+  if (idx === -1) return { tabs, activeId };
+  const remaining = tabs.filter((t, i) => i <= idx || t.closable === false);
+  const nextActive = remaining.some((t) => t.id === activeId) ? activeId : pivotId;
+  return { tabs: remaining, activeId: nextActive };
+}
+
+const VALID_KINDS: WorkspacePageKind[] = ['daily', 'calendar', 'inbox', 'tasks', 'gantt', 'countdowns', 'area', 'settings'];
 
 export function persistTabs(state: { tabs: WorkspaceTab[]; activeId: string }): void {
   try {
@@ -167,6 +205,7 @@ export function filterWorkspaceTasks(
   const q = query.trim().toLowerCase();
   const out: Task[] = [];
   for (const t of tasks) {
+    if (t.countdownOnly) continue;
     if (!matchesGroup(t, groupId) || !matchesQuery(t, q)) continue;
     const bucket = classifyTaskBucket(t, todayIso);
     if (filter === 'all') {
@@ -200,6 +239,7 @@ export function taskCountsByFilter(
     completed: 0,
   };
   for (const t of tasks) {
+    if (t.countdownOnly) continue;
     if (!matchesGroup(t, groupId)) continue;
     const bucket = classifyTaskBucket(t, todayIso);
     if (bucket === 'completed') {

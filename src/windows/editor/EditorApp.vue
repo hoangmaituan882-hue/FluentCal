@@ -8,9 +8,16 @@ import { doc, groupList, initStore } from '@/stores/doc';
 import { startThemeSync } from '@/composables/theme';
 import { addDays, diffDays, today } from '@/lib/date';
 import { dayInfo } from '@/lib/lunar';
-import { formatMinToHHMM, parseTimeMin } from '@/lib/dayLayout';
+import {
+  applyTimelineDraftPatch,
+  formatMinToHHMM,
+  parseTimeMin,
+  pendingDraftFromTask,
+  type PendingTimelineDraft,
+} from '@/lib/dayLayout';
 import { deleteOccurrence, deleteTask, makeGroup, makeTask, saveGroup, saveTask } from '@/lib/tasks';
 import { mergeEdit } from '@/lib/merge';
+import { clearPendingDraft, setPendingDraft, ui } from '../desk/state';
 import RepeatEditor from './RepeatEditor.vue';
 import ReminderEditor from './ReminderEditor.vue';
 import DepsEditor from './DepsEditor.vue';
@@ -38,6 +45,40 @@ let closing = false;
 const dirty = computed(() => !!draft.value && JSON.stringify(draft.value) !== baseline.value);
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v));
 
+function syncDraftOut(pd: Omit<PendingTimelineDraft, 'rev'> | null) {
+  if (props.embedded) {
+    if (!pd) {
+      clearPendingDraft();
+      return;
+    }
+    const cur = ui.pendingDraft;
+    if (
+      cur &&
+      cur.date === pd.date &&
+      cur.startMin === pd.startMin &&
+      cur.endMin === pd.endMin &&
+      cur.title === pd.title &&
+      cur.color === pd.color &&
+      cur.groupId === pd.groupId
+    ) {
+      return;
+    }
+    setPendingDraft(pd);
+  } else if (isTauri) {
+    void call('editor_draft_sync', { draft: pd });
+  }
+}
+
+function applyIncomingDraft(pd: PendingTimelineDraft | null) {
+  if (!isNew.value || !draft.value || !pd || pd.source !== 'timeline') return;
+  const wasDirty = dirty.value;
+  applyTimelineDraftPatch(draft.value, pd);
+  if (!wasDirty) {
+    baseline.value = JSON.stringify(draft.value);
+    base = clone(draft.value);
+  }
+}
+
 function load(p: Payload | null) {
   missing.value = false;
   titleError.value = false;
@@ -47,6 +88,7 @@ function load(p: Payload | null) {
     missing.value = !t;
     isNew.value = false;
     occDate.value = p.date ?? t?.start ?? '';
+    syncDraftOut(null);
   } else {
     const start = p?.start ?? today();
     draft.value = makeTask({
@@ -60,6 +102,7 @@ function load(p: Payload | null) {
     });
     isNew.value = true;
     occDate.value = start;
+    if (draft.value) syncDraftOut(pendingDraftFromTask(draft.value));
   }
   baseline.value = JSON.stringify(draft.value);
   base = draft.value ? clone(draft.value) : null;
@@ -74,6 +117,7 @@ async function takePending() {
 }
 function close() {
   closing = true;
+  syncDraftOut(null);
   if (props.embedded) emit('close');
   else void currentWindow.close();
 }
@@ -104,6 +148,7 @@ async function save() {
   } else {
     await saveTask(clone(t));
   }
+  syncDraftOut(null);
   close();
 }
 
@@ -213,6 +258,8 @@ function onKey(e: KeyboardEvent) {
   e.preventDefault();
 }
 
+let unlistenDeskDraft: (() => void) | undefined;
+
 onMounted(async () => {
   window.addEventListener('keydown', onKey);
   await initStore();
@@ -220,6 +267,7 @@ onMounted(async () => {
     load(props.initialPayload ?? null);
     return;
   }
+  unlistenDeskDraft = on<PendingTimelineDraft | null>('desk://draft', applyIncomingDraft);
   load(await call<Payload | null>('pending_take'));
   on('pending://editor', () => void takePending());
   await currentWindow.show();
@@ -234,7 +282,31 @@ onMounted(async () => {
 });
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKey);
+  unlistenDeskDraft?.();
+  syncDraftOut(null);
 });
+watch(
+  [
+    isNew,
+    () => draft.value?.title,
+    () => draft.value?.start,
+    () => draft.value?.time,
+    () => draft.value?.duration,
+    () => draft.value?.color,
+    () => draft.value?.groupId,
+  ],
+  () => {
+    if (isNew.value && draft.value) {
+      syncDraftOut(pendingDraftFromTask(draft.value));
+    }
+  },
+);
+watch(
+  () => ui.pendingDraft,
+  (pd) => {
+    if (props.embedded) applyIncomingDraft(pd);
+  },
+);
 watch(
   () => props.initialPayload,
   (p) => {

@@ -49,7 +49,7 @@ import { now } from '@/composables/now';
 import { syncNow, syncStatus, watchSync } from '@/composables/sync';
 import { statusLine } from '@/lib/syncText';
 import { chipMenu, moreMenu } from './menus';
-import { goToday, openEditor, shownTasks, ui } from './state';
+import { goToday, openEditor, setPendingDraft, shownTasks, ui } from './state';
 
 watchSync();
 
@@ -331,7 +331,7 @@ function onBlockClick(date: ISODate, b: CompactRenderedBlock) {
 function onBlockMenu(b: CompactRenderedBlock, e: MouseEvent) {
   if (b.kind !== 'single') return;
   const occ = occLookup.value.get(b.id);
-  if (occ) void chipMenu(occ, e);
+  if (occ) void chipMenu(occ, { x: e.clientX, y: e.clientY });
 }
 
 function onColumnDblClick(date: ISODate, e: MouseEvent) {
@@ -339,6 +339,13 @@ function onColumnDblClick(date: ISODate, e: MouseEvent) {
   if ((e.target as HTMLElement).closest('.cv-block')) return;
   const colRect = (e.currentTarget as HTMLElement).getBoundingClientRect();
   const min = clampMinutes(floorMinutes(((e.clientY - colRect.top) / hourHeight.value) * 60), 0, DAY_MINUTES - DEFAULT_DURATION);
+  setPendingDraft({
+    date,
+    startMin: min,
+    endMin: Math.min(DAY_MINUTES, min + DEFAULT_DURATION),
+    title: '新建事项',
+    source: 'timeline',
+  });
   openEditor({
     mode: 'new',
     start: date,
@@ -351,6 +358,13 @@ function onColumnDblClick(date: ISODate, e: MouseEvent) {
 // ---------------------------------------------------------------- Empty-slot Mouse Drag-to-Create
 
 const draftCreate = ref<{ date: ISODate; startMin: number; endMin: number } | null>(null);
+const activeDraft = computed(() => {
+  if (draftCreate.value) return { ...draftCreate.value, title: '新建事项' };
+  const p = ui.pendingDraft;
+  return p
+    ? { date: p.date, startMin: p.startMin, endMin: p.endMin, title: p.title || '新建事项' }
+    : null;
+});
 let cleanupColDrag: (() => void) | null = null;
 
 function onColPointerDown(date: ISODate, e: PointerEvent) {
@@ -397,6 +411,15 @@ function onColPointerDown(date: ISODate, e: PointerEvent) {
     if (ev.pointerId !== pointerId) return;
     const cur = draftCreate.value;
     const ok = started && !!cur;
+    if (ok && cur) {
+      setPendingDraft({
+        date: cur.date,
+        startMin: cur.startMin,
+        endMin: cur.endMin,
+        title: '新建事项',
+        source: 'timeline',
+      });
+    }
     cleanup();
     if (ok && cur) {
       openEditor({
@@ -998,7 +1021,7 @@ onBeforeUnmount(() => {
                 :class="{ done: o.done }"
                 :style="{ '--ev-bar': taskAccentHex(o.task) }"
                 @click="openEditor({ mode: 'edit', taskId: o.task.id, date: o.date })"
-                @contextmenu.prevent.stop="chipMenu(o, $event)"
+                @contextmenu.prevent.stop="chipMenu(o, { x: $event.clientX, y: $event.clientY })"
               >
                 <span class="ad-title">{{ o.task.title }}</span>
               </button>
@@ -1124,22 +1147,22 @@ onBeforeUnmount(() => {
                   </div>
 
                   <div
-                    v-if="draftCreate && draftCreate.date === d"
+                    v-if="activeDraft && activeDraft.date === d"
                     class="cv-block single draft"
                     :style="{
-                      top: `${((draftCreate.startMin / 60) * hourHeight + 1.5).toFixed(1)}px`,
-                      height: `${Math.max(20, ((draftCreate.endMin - draftCreate.startMin) / 60) * hourHeight - 3).toFixed(1)}px`,
+                      top: `${((activeDraft.startMin / 60) * hourHeight + 1.5).toFixed(1)}px`,
+                      height: `${Math.max(20, ((activeDraft.endMin - activeDraft.startMin) / 60) * hourHeight - 3).toFixed(1)}px`,
                       left: 'calc(0% + 1px)',
                       width: 'calc(100% - 2px)',
                       '--ev-bar': '#ee632c',
                     }"
                   >
                     <div class="blk-top">
-                      <span class="blk-title">新建事项</span>
-                      <span class="blk-dur">{{ formatDurationLabel(draftCreate.endMin - draftCreate.startMin) }}</span>
+                      <span class="blk-title">{{ activeDraft.title }}</span>
+                      <span class="blk-dur">{{ formatDurationLabel(activeDraft.endMin - activeDraft.startMin) }}</span>
                     </div>
-                    <div v-if="((draftCreate.endMin - draftCreate.startMin) / 60) * hourHeight >= 40" class="blk-time">
-                      {{ formatRangeLabel(draftCreate.startMin, draftCreate.endMin) }}
+                    <div v-if="((activeDraft.endMin - activeDraft.startMin) / 60) * hourHeight >= 40" class="blk-time">
+                      {{ formatRangeLabel(activeDraft.startMin, activeDraft.endMin) }}
                     </div>
                   </div>
                 </div>
@@ -1196,7 +1219,7 @@ onBeforeUnmount(() => {
             :class="{ done: item.done }"
             :style="{ '--ev-bar': taskAccentHex(item.task) }"
             @click="openEditor({ mode: 'edit', taskId: item.task.id, date: item.date })"
-            @contextmenu.prevent.stop="chipMenu(item, $event)"
+            @contextmenu.prevent.stop="chipMenu(item, { x: $event.clientX, y: $event.clientY })"
           >
             <button
               type="button"
@@ -1248,7 +1271,7 @@ onBeforeUnmount(() => {
               :class="{ done: o.done }"
               :style="{ '--ev-bar': taskAccentHex(o.task) }"
               @click="openEditor({ mode: 'edit', taskId: o.task.id, date: o.date })"
-              @contextmenu.prevent.stop="chipMenu(o, $event)"
+              @contextmenu.prevent.stop="chipMenu(o, { x: $event.clientX, y: $event.clientY })"
             >
               <button
                 type="button"

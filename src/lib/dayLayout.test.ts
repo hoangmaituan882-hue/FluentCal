@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  applyTimelineDraftPatch,
   computeCreateRange,
   floorMinutes,
   formatDurationLabel,
@@ -7,8 +8,10 @@ import {
   formatRangeLabel,
   layoutDayEvents,
   parseTimeMin,
+  pendingDraftFromTask,
   snapMinutes,
 } from './dayLayout';
+import type { Task } from '@/types';
 
 describe('dayLayout helpers', () => {
   it('parses and formats HH:mm minutes safely', () => {
@@ -104,5 +107,81 @@ describe('computeCreateRange', () => {
   it('clamps cleanly to day bounds 0..1440', () => {
     expect(computeCreateRange(-10, -20)).toEqual({ startMin: 0, endMin: 15, pillMin: 0 });
     expect(computeCreateRange(1435, 1460)).toEqual({ startMin: 1425, endMin: 1440, pillMin: 1440 });
+  });
+});
+
+describe('pendingTimelineDraft helpers', () => {
+  it('projects timed tasks to pending draft with default title fallback and null for all-day', () => {
+    expect(
+      pendingDraftFromTask({
+        start: '2026-11-23',
+        title: '',
+        time: undefined,
+        duration: undefined,
+      }),
+    ).toBeNull();
+
+    expect(
+      pendingDraftFromTask(
+        {
+          start: '2026-11-23',
+          title: '  ',
+          time: '16:30',
+          duration: 135,
+          color: 'blue',
+          groupId: 'grp-1',
+        },
+        3,
+      ),
+    ).toEqual({
+      date: '2026-11-23',
+      startMin: 16 * 60 + 30,
+      endMin: 18 * 60 + 45,
+      title: '新建事项',
+      color: 'blue',
+      groupId: 'grp-1',
+      source: 'editor',
+      rev: 3,
+    });
+
+    expect(
+      pendingDraftFromTask({
+        start: '2026-11-23',
+        title: '设计评审',
+        time: '23:30',
+        duration: 120,
+      }),
+    ).toMatchObject({
+      startMin: 23 * 60 + 30,
+      endMin: 1440,
+      title: '设计评审',
+    });
+  });
+
+  it('applies timeline drag patches onto editor task while preserving multi-day span', () => {
+    const task = {
+      id: 't1',
+      title: '设计评审',
+      start: '2026-11-23',
+      end: '2026-11-25',
+      time: '09:00',
+      duration: 60,
+      done: false,
+      progress: 0,
+      order: 0,
+      createdAt: 0,
+      updatedAt: 0,
+    } as Task;
+
+    applyTimelineDraftPatch(task, {
+      date: '2026-11-24',
+      startMin: 14 * 60 + 15,
+      endMin: 16 * 60,
+    });
+
+    expect(task.start).toBe('2026-11-24');
+    expect(task.end).toBe('2026-11-26');
+    expect(task.time).toBe('14:15');
+    expect(task.duration).toBe(105);
   });
 });

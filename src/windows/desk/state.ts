@@ -1,9 +1,16 @@
 import { t as tr } from '@/i18n';
 import { computed, reactive } from 'vue';
-import type { ISODate } from '@/types';
+import type { ISODate, Task } from '@/types';
 import { addDays, addMonths, parts, startOfMonth, startOfWeek } from '@/lib/date';
-import { call } from '@/api';
-import { shown, tidyFilter } from '@/lib/filter';
+import type { PendingTimelineDraft } from '@/lib/dayLayout';
+import { call, isTauri } from '@/api';
+import {
+  clusterSpotlightState,
+  shown,
+  taskSpotlightState,
+  tidyFilter,
+  type SpotlightVisualState,
+} from '@/lib/filter';
 import { doc, patchSettings, storeState, taskList } from '@/stores/doc';
 import { now } from '@/composables/now';
 import { occurrenceOn, occurrences } from '@/lib/recur';
@@ -35,15 +42,64 @@ export const ui = reactive({
   /** 按分组筛选 (the web view): the group ids that show, '' for 未分组; empty: everything.
    * Kept here only: it is for a look. */
   groupFilter: [] as string[],
+  /** Two-stage Workspace calendar filter: locked spotlight group ids and currently hovered group pill. */
+  spotlightGroups: [] as string[],
+  hoverGroup: null as string | null,
+  /** Live timeline draft kept visible while the new-task editor is open. */
+  pendingDraft: null as PendingTimelineDraft | null,
 });
+
+export type { PendingTimelineDraft };
+let draftRev = 0;
+
+export function setPendingDraft(draft: Omit<PendingTimelineDraft, 'rev'> | null): void {
+  ui.pendingDraft = draft ? { ...draft, rev: ++draftRev } : null;
+}
+
+export function clearPendingDraft(): void {
+  ui.pendingDraft = null;
+}
+
+export function updatePendingDraftFromTimeline(patch: {
+  date: ISODate;
+  startMin: number;
+  endMin: number;
+}): void {
+  const prev = ui.pendingDraft;
+  ui.pendingDraft = {
+    date: patch.date,
+    startMin: patch.startMin,
+    endMin: patch.endMin,
+    title: prev?.title || '新建事项',
+    color: prev?.color,
+    groupId: prev?.groupId,
+    source: 'timeline',
+    rev: ++draftRev,
+  };
+  if (!editorHandler && isTauri) {
+    void call('editor_draft_sync', { draft: ui.pendingDraft });
+  }
+}
 
 /** The filter as it applies now (groups that are gone have left it). */
 export const groupFilter = computed(() => tidyFilter(doc.groups, ui.groupFilter));
+export const spotlightGroups = computed(() => tidyFilter(doc.groups, ui.spotlightGroups));
+
+export function spotlightStateOf(t: Task): SpotlightVisualState {
+  if (!spotlightGroups.value.length && ui.hoverGroup === null) return 'normal';
+  return taskSpotlightState(doc.groups, spotlightGroups.value, ui.hoverGroup, t);
+}
+
+export function clusterSpotlightStateOf(tasks: readonly Task[]): SpotlightVisualState {
+  if (!spotlightGroups.value.length && ui.hoverGroup === null) return 'normal';
+  return clusterSpotlightState(doc.groups, spotlightGroups.value, ui.hoverGroup, tasks);
+}
 /** The tasks the month, the weeks, the list and "+N" show. Search, the countdowns and the
  * Gantt chart take all of them. */
 export const shownTasks = computed(() => {
   const f = groupFilter.value;
-  return f.length ? taskList.value.filter((t) => t.id === ui.revealTask || shown(doc.groups, f, t)) : taskList.value;
+  const visible = taskList.value.filter((t) => !t.countdownOnly);
+  return f.length ? visible.filter((t) => t.id === ui.revealTask || shown(doc.groups, f, t)) : visible;
 });
 
 export function clearReveal(): void { ui.revealTask = ''; }
@@ -75,6 +131,7 @@ export const details = reactive({ open: false, taskId: '', date: '' as ISODate }
 let editorHandler: ((payload: EditorPayload) => void) | null = null;
 let settingsHandler: ((page?: string) => void) | null = null;
 let ganttHandler: ((taskId?: string) => void) | null = null;
+let countdownsHandler: (() => void) | null = null;
 
 export function setEditorHandler(fn: ((payload: EditorPayload) => void) | null): void {
   editorHandler = fn;
@@ -88,8 +145,20 @@ export function setGanttHandler(fn: ((taskId?: string) => void) | null): void {
   ganttHandler = fn;
 }
 
+export function setCountdownsHandler(fn: (() => void) | null): void {
+  countdownsHandler = fn;
+}
+
 export function openWorkspace(): void {
   void call('workspace_open');
+}
+
+export function openCountdowns(): void {
+  if (countdownsHandler) {
+    countdownsHandler();
+    return;
+  }
+  openSettings('calendar');
 }
 
 export function openEditor(payload: EditorPayload): void {

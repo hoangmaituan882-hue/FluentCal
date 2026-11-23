@@ -1,12 +1,13 @@
-/* Folio Warm Light Mode tokens & base layout rules for Workspace window.
-   A matching [data-ws-theme='dark'] hook is prepared for future dark mode support. */
+/* Folio Warm Light Mode & Obsidian Dark Mode tokens & motion primitives for Workspace window. */
 
 html[data-window='workspace'] {
-  --ws-stage-bg: #EFEEEA;
-  --ws-sidebar-bg: #FAF9F6;
+  --ws-stage-bg: #EBEBEB;
+  --ws-sidebar-bg: #EBEBEB;
   --ws-card-bg: #FFFFFF;
-  --ws-card-subtle: #F5F4F0;
-  --ws-card-hover: #F7F6F2;
+  --ws-card-subtle: #F5F4F1;
+  --ws-card-hover: #F7F6F3;
+  --ws-stone-pill: rgba(0, 0, 0, 0.052);
+  --ws-stone-pill-hover: rgba(0, 0, 0, 0.088);
   --ws-ink: #1C1B19;
   --ws-ink-secondary: #6E6A63;
   --ws-ink-muted: #9E9990;
@@ -15,20 +16,53 @@ html[data-window='workspace'] {
   --ws-hairline-strong: rgba(28, 25, 23, 0.14);
   --ws-pill-bg: rgba(28, 25, 23, 0.055);
   --ws-pill-hover: rgba(28, 25, 23, 0.09);
+  --ws-check-border: rgba(28, 25, 23, 0.24);
+  --ws-scroll-thumb: rgba(28, 25, 23, 0.14);
+  --ws-scroll-thumb-hover: rgba(28, 25, 23, 0.26);
+  --ws-gate-bg: rgba(235, 235, 235, 0.88);
   --ws-accent: #1C1B19;
   --ws-accent-soft: rgba(28, 25, 23, 0.08);
+  --ws-progress-bg: rgba(181, 71, 13, 0.11);
+  --ws-progress-border: rgba(181, 71, 13, 0.25);
+  --ws-progress-ink: #9A3B08;
+  --ws-success: #0F7B0F;
+  --ws-success-bg: rgba(16, 124, 16, 0.1);
+  --ws-success-border: rgba(16, 124, 16, 0.24);
   --ws-danger: #C42B1C;
   --ws-danger-bg: #FDE7E9;
+
+  /* Tegon Pastel Status Group Pill Tokens */
+  --ws-pill-review-bg: #CCE5FF;
+  --ws-pill-review-ink: #0F2942;
+  --ws-pill-progress-bg: #FCD5B5;
+  --ws-pill-progress-ink: #4A2206;
+  --ws-pill-todo-bg: #E6E5E1;
+  --ws-pill-todo-ink: #1C1B19;
+  --ws-pill-backlog-bg: #E2DEB3;
+  --ws-pill-backlog-ink: #2C2912;
+  --ws-pill-done-bg: #BCEAC2;
+  --ws-pill-done-ink: #0B2E16;
+  --pill-done-chk: #BCEAC2;
+  --ws-pill-overdue-bg: #FEE2E2;
+  --ws-pill-overdue-ink: #7F1D1D;
+  --sg-review-fill: rgba(59, 130, 246, 0.14);
+  --sg-progress-fill: rgba(217, 119, 6, 0.15);
 
   --ws-shadow-sm: 0 1px 2px rgba(28, 25, 23, 0.045), 0 1px 1px rgba(28, 25, 23, 0.03);
   --ws-shadow-md: 0 6px 20px rgba(28, 25, 23, 0.07), 0 1px 3px rgba(28, 25, 23, 0.04);
   --ws-shadow-float: 0 18px 48px rgba(28, 25, 23, 0.14), 0 2px 8px rgba(28, 25, 23, 0.06);
+  --ws-dock-bg: rgba(255, 255, 255, 0.92);
+  --ws-dock-border: rgba(28, 25, 23, 0.085);
+  --ws-dock-shadow: 0 12px 32px rgba(24, 22, 19, 0.12), 0 2px 6px rgba(24, 22, 19, 0.05);
+  --ws-scrim-bg: rgba(18, 17, 15, 0.28);
 
+  /* Motion tokens aligned with transitions-polish open/close asymmetry */
   --ws-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ws-ease-spring: cubic-bezier(0.34, 1.28, 0.64, 1);
   --ws-dur-quick: 150ms;
-  --ws-dur-fast: 240ms;
-  --ws-dur-panel: 300ms;
+  --ws-dur-fast: 250ms;
+  --ws-dur-panel-open: 320ms;
+  --ws-dur-panel-close: 180ms;
 
   /* Blend reused desk/fluent calendar & gantt views seamlessly into Folio Light Mode */
   --desk-bg: #FFFFFF;
@@ -59,27 +93,73 @@ html[data-window='workspace'] {
 }
 
 html[data-window='workspace'][data-ws-theme='dark'] {
-  --ws-stage-bg: #090A0C;
-  --ws-sidebar-bg: #111215;
-  --ws-card-bg: #17181C;
-  --ws-card-subtle: #1D1F24;
-  --ws-card-hover: #212329;
+  --ws-stage-bg: #0D0E12;
+  --ws-sidebar-bg: #0D0E12;
+  --ws-card-bg: #16171C;
+  --ws-card-subtle: #1D1F25;
+  --ws-card-hover: #22242B;
+  --ws-stone-pill: rgba(255, 255, 255, 0.07);
+  --ws-stone-pill-hover: rgba(255, 255, 255, 0.12);
   --ws-ink: #F2F0EB;
-  --ws-ink-secondary: rgba(242, 240, 235, 0.72);
+  --ws-ink-secondary: rgba(242, 240, 235, 0.74);
   --ws-ink-muted: rgba(242, 240, 235, 0.46);
   --ws-ink-inverse: #141518;
   --ws-hairline: rgba(255, 255, 255, 0.08);
-  --ws-hairline-strong: rgba(255, 255, 255, 0.15);
-  --ws-pill-bg: rgba(255, 255, 255, 0.07);
-  --ws-pill-hover: rgba(255, 255, 255, 0.12);
+  --ws-hairline-strong: rgba(255, 255, 255, 0.16);
+  --ws-pill-bg: rgba(255, 255, 255, 0.075);
+  --ws-pill-hover: rgba(255, 255, 255, 0.13);
+  --ws-check-border: rgba(242, 240, 235, 0.28);
+  --ws-scroll-thumb: rgba(255, 255, 255, 0.14);
+  --ws-scroll-thumb-hover: rgba(255, 255, 255, 0.26);
+  --ws-gate-bg: rgba(9, 10, 12, 0.88);
   --ws-accent: #F2F0EB;
   --ws-accent-soft: rgba(255, 255, 255, 0.09);
+  --ws-progress-bg: rgba(251, 146, 60, 0.15);
+  --ws-progress-border: rgba(251, 146, 60, 0.34);
+  --ws-progress-ink: #FDBA74;
+  --ws-success: #4ADE80;
+  --ws-success-bg: rgba(74, 222, 128, 0.14);
+  --ws-success-border: rgba(74, 222, 128, 0.32);
+  --ws-danger: #FF7B72;
+  --ws-danger-bg: rgba(255, 107, 107, 0.14);
+
+  --ws-pill-review-bg: rgba(59, 130, 246, 0.24);
+  --ws-pill-review-ink: #BFDBFE;
+  --ws-pill-progress-bg: rgba(245, 158, 11, 0.24);
+  --ws-pill-progress-ink: #FDE68A;
+  --ws-pill-todo-bg: rgba(255, 255, 255, 0.11);
+  --ws-pill-todo-ink: #F2F0EB;
+  --ws-pill-backlog-bg: rgba(202, 138, 4, 0.22);
+  --ws-pill-backlog-ink: #FEF08A;
+  --ws-pill-done-bg: rgba(34, 197, 94, 0.22);
+  --ws-pill-done-ink: #BBF7D0;
+  --pill-done-chk: #14532D;
+  --ws-pill-overdue-bg: rgba(239, 68, 68, 0.24);
+  --ws-pill-overdue-ink: #FECACA;
+  --sg-review-fill: rgba(59, 130, 246, 0.24);
+  --sg-progress-fill: rgba(245, 158, 11, 0.24);
+
+  --ws-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.28), 0 1px 1px rgba(0, 0, 0, 0.2);
+  --ws-shadow-md: 0 8px 24px rgba(0, 0, 0, 0.38), 0 1px 3px rgba(0, 0, 0, 0.22);
+  --ws-shadow-float: 0 22px 54px rgba(0, 0, 0, 0.56), 0 2px 10px rgba(0, 0, 0, 0.32);
+  --ws-dock-bg: rgba(22, 23, 28, 0.92);
+  --ws-dock-border: rgba(255, 255, 255, 0.12);
+  --ws-dock-shadow: 0 16px 38px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.32);
+  --ws-scrim-bg: rgba(0, 0, 0, 0.56);
+
   --desk-bg: #17181C;
-  --cell-bg: #1C1D22;
+  --cell-bg: #1B1C21;
   --panel-bg: #17181C;
   --calendar-text: #F2F0EB;
-  --calendar-text-secondary: rgba(242, 240, 235, 0.72);
+  --calendar-text-secondary: rgba(242, 240, 235, 0.74);
   --calendar-text-tertiary: rgba(242, 240, 235, 0.46);
+  --desk-stroke: rgba(255, 255, 255, 0.08);
+  --today-border: #F2F0EB;
+  --today-fill: rgba(255, 255, 255, 0.08);
+  --today-text: #F2F0EB;
+  --rest-tint: rgba(255, 255, 255, 0.025);
+  --holiday-text: #FF8B94;
+  --term-text: #FBBF24;
   --solid-base: #090A0C;
   --layer-fill: #111215;
   --card-fill: #17181C;
@@ -96,12 +176,15 @@ html[data-window='workspace'] body {
 .ws-root {
   position: fixed;
   inset: 0;
+  height: 100dvh;
   display: flex;
   background: var(--ws-stage-bg);
   color: var(--ws-ink);
   font-family: var(--font-ui);
   user-select: none;
   overflow: hidden;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .ws-root ::-webkit-scrollbar {
@@ -114,12 +197,12 @@ html[data-window='workspace'] body {
 }
 
 .ws-root ::-webkit-scrollbar-thumb {
-  background: rgba(28, 25, 23, 0.14);
+  background: var(--ws-scroll-thumb);
   border-radius: 999px;
 }
 
 .ws-root ::-webkit-scrollbar-thumb:hover {
-  background: rgba(28, 25, 23, 0.25);
+  background: var(--ws-scroll-thumb-hover);
 }
 
 .ws-main {
@@ -131,6 +214,26 @@ html[data-window='workspace'] body {
   position: relative;
 }
 
+.ws-sheet {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: var(--ws-card-bg);
+  border-top: 1px solid var(--ws-hairline);
+  border-left: 1px solid var(--ws-hairline);
+  border-top-left-radius: 18px;
+  overflow: hidden;
+  transition: border-radius 220ms var(--ws-ease-out);
+}
+
+.ws-main.sb-closed .ws-sheet {
+  border-left: 0;
+  border-top-left-radius: 0;
+}
+
 .ws-stage {
   flex: 1;
   min-width: 0;
@@ -138,7 +241,7 @@ html[data-window='workspace'] body {
   position: relative;
   display: flex;
   flex-direction: column;
-  padding: 6px 14px 14px;
+  padding: 12px 18px 14px;
   overflow: hidden;
 }
 
@@ -149,10 +252,9 @@ html[data-window='workspace'] body {
   display: flex;
   flex-direction: column;
   background: var(--ws-card-bg);
-  border: 1px solid var(--ws-hairline);
-  border-radius: 18px;
-  box-shadow: var(--ws-shadow-sm);
-  padding: 12px 14px;
+  border: 0;
+  border-radius: 14px;
+  padding: 2px 4px;
   overflow: hidden;
   position: relative;
 }
@@ -228,7 +330,7 @@ html[data-window='workspace'] body {
 }
 
 .ws-cta-btn:hover {
-  opacity: 0.92;
+  opacity: 0.9;
 }
 
 .ws-cta-btn:active {
@@ -282,9 +384,9 @@ html[data-window='workspace'] body {
   width: 18px;
   height: 18px;
   border-radius: 999px;
-  border: 1.5px solid rgba(28, 25, 23, 0.24);
+  border: 1.5px solid var(--ws-check-border);
   background: transparent;
-  color: #FFFFFF;
+  color: var(--ws-ink-inverse);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -299,7 +401,7 @@ html[data-window='workspace'] body {
 
 .ws-check-circle:hover {
   border-color: var(--ws-ink);
-  background: rgba(28, 25, 23, 0.04);
+  background: var(--ws-pill-bg);
 }
 
 .ws-check-circle:active {
@@ -308,8 +410,8 @@ html[data-window='workspace'] body {
 
 .ws-check-circle.in-progress {
   border-style: dashed;
-  border-color: #B5470D;
-  background: rgba(181, 71, 13, 0.08);
+  border-color: var(--ws-progress-ink);
+  background: var(--ws-progress-bg);
 }
 
 .ws-check-circle.done {
@@ -334,9 +436,46 @@ html[data-window='workspace'] body {
   stroke-dashoffset: 0;
 }
 
-/* Stage transitions between views (smooth cross-blur fade) */
+/* Shared sliding indicator primitives */
+.ws-slide-pill,
+.ws-slide-underline {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  z-index: 0;
+  will-change: transform, width;
+  transition:
+    transform var(--ws-dur-fast) var(--ws-ease-out),
+    width var(--ws-dur-fast) var(--ws-ease-out),
+    height var(--ws-dur-fast) var(--ws-ease-out),
+    opacity var(--ws-dur-quick) ease;
+}
+
+.ws-slide-pill.no-anim,
+.ws-slide-underline.no-anim {
+  transition: none !important;
+}
+
+/* Shared icon morph crossfade */
+.ws-icon-swap-enter-active,
+.ws-icon-swap-leave-active {
+  transition:
+    opacity var(--ws-dur-quick) var(--ws-ease-out),
+    transform var(--ws-dur-quick) var(--ws-ease-out),
+    filter var(--ws-dur-quick) var(--ws-ease-out);
+}
+
+.ws-icon-swap-enter-from,
+.ws-icon-swap-leave-to {
+  opacity: 0;
+  transform: scale(0.82);
+  filter: blur(2px);
+}
+
+/* Stage transitions between views (asymmetric smooth blur fade) */
 .ws-stage-enter-active {
-  transition: opacity 210ms var(--ws-ease-out), transform 210ms var(--ws-ease-out), filter 210ms var(--ws-ease-out);
+  transition: opacity 220ms var(--ws-ease-out), transform 220ms var(--ws-ease-out), filter 220ms var(--ws-ease-out);
 }
 
 .ws-stage-leave-active {
@@ -354,36 +493,122 @@ html[data-window='workspace'] body {
   transform: translateY(-4px);
 }
 
-/* Floating Inspector slide + scale transition */
+/* Floating Inspector slide + subtle blur open, crisp quick close */
 .ws-inspector-enter-active {
-  transition: opacity 260ms var(--ws-ease-out), transform 260ms var(--ws-ease-out);
+  transition:
+    opacity var(--ws-dur-panel-open) var(--ws-ease-out),
+    transform var(--ws-dur-panel-open) var(--ws-ease-out),
+    filter var(--ws-dur-panel-open) var(--ws-ease-out);
 }
 
 .ws-inspector-leave-active {
-  transition: opacity 170ms ease, transform 170ms ease;
+  pointer-events: none;
+  transition:
+    opacity var(--ws-dur-panel-close) var(--ws-ease-out),
+    transform var(--ws-dur-panel-close) var(--ws-ease-out);
 }
 
-.ws-inspector-enter-from,
+.ws-main.is-tablet .ws-sheet {
+  border-left: 0;
+  border-top-left-radius: 0;
+}
+
+.ws-main.is-tablet .ws-stage {
+  padding: 10px 14px 12px;
+}
+
+.ws-main.is-phone .ws-sheet {
+  border-top: 0;
+  border-left: 0;
+  border-top-left-radius: 0;
+}
+
+.ws-main.is-phone .ws-stage {
+  padding: 6px 12px 0;
+}
+
+.ws-main.is-phone .ws-stage:has(.calico-stage) {
+  padding: 0;
+}
+
+.ws-main.is-phone .ws-scroll-page {
+  padding: 6px 2px calc(92px + env(safe-area-inset-bottom));
+}
+
+.ws-main.is-phone .ws-card-frame {
+  padding: 0;
+  border-radius: 12px;
+}
+
+.ws-main.is-phone .ws-settings-frame {
+  padding-bottom: calc(68px + env(safe-area-inset-bottom));
+}
+
+.ws-inspector-enter-from {
+  opacity: 0;
+  transform: translateX(24px) scale(0.985);
+  filter: blur(2px);
+}
+
 .ws-inspector-leave-to {
   opacity: 0;
-  transform: translateX(26px) scale(0.98);
+  transform: translateX(14px);
 }
 
-/* Modal scale-in / soft scale-out transition */
+.ws-inspector-enter-active.ws-ins-host.phone .ws-inspector {
+  transition: transform var(--ws-dur-panel-open) var(--ws-ease-out);
+}
+
+.ws-inspector-leave-active.ws-ins-host.phone .ws-inspector {
+  transition: transform var(--ws-dur-panel-close) var(--ws-ease-out);
+}
+
+.ws-inspector-enter-from.ws-ins-host.phone {
+  transform: none;
+  filter: none;
+}
+
+.ws-inspector-enter-from.ws-ins-host.phone .ws-inspector {
+  transform: translateY(32px);
+}
+
+.ws-inspector-leave-to.ws-ins-host.phone {
+  transform: none;
+}
+
+.ws-inspector-leave-to.ws-ins-host.phone .ws-inspector {
+  transform: translateY(24px);
+}
+
+@media (max-width: 639px) {
+  .ws-page-title {
+    font-size: 24px;
+  }
+}
+
+@media (hover: none) {
+  .ws-icon-circle,
+  .ws-check-circle {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+/* Modal scale-in / faster quiet close transition */
 .ws-modal-enter-active {
-  transition: opacity 220ms var(--ws-ease-out);
+  transition: opacity var(--ws-dur-fast) var(--ws-ease-out);
 }
 
 .ws-modal-leave-active {
-  transition: opacity 150ms ease;
+  pointer-events: none;
+  transition: opacity var(--ws-dur-quick) var(--ws-ease-out);
 }
 
 .ws-modal-enter-active .ws-modal-card {
-  transition: transform 220ms var(--ws-ease-out), opacity 220ms var(--ws-ease-out);
+  transition: transform var(--ws-dur-fast) var(--ws-ease-out), opacity var(--ws-dur-fast) var(--ws-ease-out);
 }
 
 .ws-modal-leave-active .ws-modal-card {
-  transition: transform 140ms ease, opacity 140ms ease;
+  transition: transform var(--ws-dur-quick) var(--ws-ease-out), opacity var(--ws-dur-quick) var(--ws-ease-out);
 }
 
 .ws-modal-enter-from,
@@ -393,7 +618,7 @@ html[data-window='workspace'] body {
 
 .ws-modal-enter-from .ws-modal-card {
   opacity: 0;
-  transform: scale(0.955) translateY(8px);
+  transform: scale(0.96) translateY(8px);
 }
 
 .ws-modal-leave-to .ws-modal-card {
@@ -410,6 +635,10 @@ html[data-window='workspace'] body {
   .ws-modal-leave-active,
   .ws-modal-enter-active .ws-modal-card,
   .ws-modal-leave-active .ws-modal-card,
+  .ws-icon-swap-enter-active,
+  .ws-icon-swap-leave-active,
+  .ws-slide-pill,
+  .ws-slide-underline,
   .ws-check-circle,
   .ws-check-circle svg {
     transition-duration: 0.01ms !important;

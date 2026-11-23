@@ -64,3 +64,37 @@ export function filterRows(tasks: readonly Task[], groups: Groups, filter: reado
 export function newTaskGroup(filter: readonly string[]): string | undefined {
   return filter.length === 1 && filter[0] !== '' ? filter[0] : undefined;
 }
+
+export type SpotlightVisualState = 'normal' | 'dimmed' | 'dissolved';
+
+/** Visual focus state for a task under the two-stage Hover Spotlight + Click Blur-Dissolve filter. */
+export function taskSpotlightState(
+  groups: Groups,
+  selected: readonly string[],
+  hovered: string | null,
+  t: Task,
+): SpotlightVisualState {
+  if (!selected.length && hovered === null) return 'normal';
+  const gid = groupOf(groups, t);
+  if (!selected.length) return gid === hovered ? 'normal' : 'dimmed';
+  if (selected.includes(gid)) return 'normal';
+  if (hovered !== null && gid === hovered) return 'dimmed';
+  return 'dissolved';
+}
+
+/** Visual focus state for a stacked cluster block in zoomed-out MultiDayView. */
+export function clusterSpotlightState(
+  groups: Groups,
+  selected: readonly string[],
+  hovered: string | null,
+  tasks: readonly Task[],
+): SpotlightVisualState {
+  if (!tasks.length || (!selected.length && hovered === null)) return 'normal';
+  let hasDimmed = false;
+  for (const t of tasks) {
+    const s = taskSpotlightState(groups, selected, hovered, t);
+    if (s === 'normal') return 'normal';
+    if (s === 'dimmed') hasDimmed = true;
+  }
+  return hasDimmed ? 'dimmed' : 'dissolved';
+}

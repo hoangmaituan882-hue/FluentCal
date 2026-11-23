@@ -5,6 +5,7 @@ import {
   FCheckbox,
   FColorSwatches,
   FDatePicker,
+  FGroupIcon,
   FIcon,
   FSlider,
   FTimePicker,
@@ -13,10 +14,11 @@ import {
   taskColor,
   type MenuItem,
 } from '@/fluent';
-import type { Task, TaskStatus } from '@/types';
+import { getGroupIcon } from '@/lib/groupIcons';
+import type { Task, TaskPriority, TaskStatus } from '@/types';
 import { call } from '@/api';
 import { addDays, diffDays, today } from '@/lib/date';
-import { formatMinToHHMM, parseTimeMin } from '@/lib/dayLayout';
+import { applyTimelineDraftPatch, formatMinToHHMM, parseTimeMin, pendingDraftFromTask } from '@/lib/dayLayout';
 import { flexKind } from '@/lib/flex';
 import { displayInfo as dayInfo } from '@/lib/lunar';
 import { mergeEdit } from '@/lib/merge';
@@ -24,18 +26,27 @@ import {
   applyChecklist,
   applyTaskStatus,
   checklistStats,
-  effectiveStatus,
+  effectivePriority,
+  effectiveWorkspaceStatus,
+  PRIORITY_META,
+  PRIORITY_ORDER,
   remainingTimeLabel,
+  STATUS_META,
+  WORKSPACE_STATUS_ORDER,
 } from '@/lib/taskMeta';
 import { deleteOccurrence, deleteTask, makeGroup, makeTask, saveGroup, saveTask } from '@/lib/tasks';
 import { uid } from '@/lib/uid';
 import { isDark } from '@/composables/theme';
 import { now } from '@/composables/now';
+import { useViewport } from '@/composables/useViewport';
 import { doc, groupList } from '@/stores/doc';
-import { notify, type EditorPayload } from '../desk/state';
+import { clearPendingDraft, notify, setPendingDraft, ui, type EditorPayload } from '../desk/state';
 import RepeatEditor from '../editor/RepeatEditor.vue';
 import ReminderEditor from '../editor/ReminderEditor.vue';
 import DepsEditor from '../editor/DepsEditor.vue';
+import PriorityGlyph from './PriorityGlyph.vue';
+import StatusGlyph from './StatusGlyph.vue';
+import { STATUS_DOT_COLOR } from './workspaceMenus';
 
 const props = defineProps<{
   payload: EditorPayload | null;
@@ -44,6 +55,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   close: [];
 }>();
+
+const { isPhone, isTablet, isCompactNav } = useViewport();
 
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v));
 
@@ -65,6 +78,28 @@ let minuteTimer: ReturnType<typeof setInterval> | undefined;
 
 const dirty = computed(() => !!draft.value && JSON.stringify(draft.value) !== baseline.value);
 
+function syncPendingFromInspector() {
+  if (!isNew.value || !draft.value) return;
+  const pd = pendingDraftFromTask(draft.value);
+  if (!pd) {
+    clearPendingDraft();
+    return;
+  }
+  const cur = ui.pendingDraft;
+  if (
+    cur &&
+    cur.date === pd.date &&
+    cur.startMin === pd.startMin &&
+    cur.endMin === pd.endMin &&
+    cur.title === pd.title &&
+    cur.color === pd.color &&
+    cur.groupId === pd.groupId
+  ) {
+    return;
+  }
+  setPendingDraft(pd);
+}
+
 function loadPayload(p: EditorPayload | null) {
   missing.value = false;
   addingLink.value = false;
@@ -73,6 +108,7 @@ function loadPayload(p: EditorPayload | null) {
     draft.value = null;
     base = null;
     baseline.value = '';
+    clearPendingDraft();
     return;
   }
   if (p.mode === 'edit') {
@@ -81,11 +117,13 @@ function loadPayload(p: EditorPayload | null) {
       draft.value = null;
       base = null;
       missing.value = true;
+      clearPendingDraft();
       return;
     }
     draft.value = clone(t);
     isNew.value = false;
     occDate.value = p.date ?? t.start;
+    clearPendingDraft();
   } else {
     const start = p.start ?? today();
     draft.value = makeTask({
@@ -99,6 +137,7 @@ function loadPayload(p: EditorPayload | null) {
     });
     isNew.value = true;
     occDate.value = start;
+    syncPendingFromInspector();
   }
   base = draft.value ? clone(draft.value) : null;
   baseline.value = JSON.stringify(draft.value);
@@ -109,13 +148,77 @@ function loadPayload(p: EditorPayload | null) {
 
 watch(() => props.payload, (p) => loadPayload(p), { immediate: true });
 
-const currentStatus = computed<TaskStatus>(() => (draft.value ? effectiveStatus(draft.value) : 'todo'));
+watch(
+  [
+    isNew,
+    () => draft.value?.title,
+    () => draft.value?.start,
+    () => draft.value?.time,
+    () => draft.value?.duration,
+    () => draft.value?.color,
+    () => draft.value?.groupId,
+  ],
+  () => {
+    syncPendingFromInspector();
+  },
+);
+
+watch(
+  () => ui.pendingDraft,
+  (pd) => {
+    if (!isNew.value || !draft.value || !pd || pd.source !== 'timeline') return;
+    const wasDirty = dirty.value;
+    applyTimelineDraftPatch(draft.value, pd);
+    if (!wasDirty) {
+      base = clone(draft.value);
+      baseline.value = JSON.stringify(draft.value);
+    }
+  },
+);
+
+// Sync external edits (e.g. toggling done in list/desk) when the user has no unsaved edits here.
+watch(
+  () => (draft.value && !isNew.value ? doc.tasks[draft.value.id] : undefined),
+  (ext) => {
+    if (isNew.value || !draft.value) return;
+    if (!ext) {
+      if (!dirty.value) {
+        draft.value = null;
+        base = null;
+        missing.value = true;
+      }
+      return;
+    }
+    if (!dirty.value) {
+      const serialized = JSON.stringify(ext);
+      if (serialized !== baseline.value) {
+        draft.value = clone(ext);
+        base = clone(ext);
+        baseline.value = serialized;
+      }
+    }
+  },
+  { deep: true },
+);
+
+const STATUS_CLS: Record<TaskStatus, string> = {
+  in_review: 'review',
+  in_progress: 'progress',
+  todo: 'todo',
+  backlog: 'backlog',
+  done: 'done',
+};
+
+const currentStatus = computed<TaskStatus>(() => (draft.value ? effectiveWorkspaceStatus(draft.value) : 'todo'));
+const currentPriority = computed<TaskPriority>(() => (draft.value ? effectivePriority(draft.value) : 'none'));
 
 const statusMeta = computed(() => {
   const s = currentStatus.value;
-  if (s === 'in_progress') return { label: '进行中', dot: '#B5470D', cls: 'progress' };
-  if (s === 'done') return { label: '已完成', dot: '#107C10', cls: 'done' };
-  return { label: '未开始', dot: '#9E9990', cls: 'todo' };
+  return {
+    label: STATUS_META[s].label,
+    dot: STATUS_DOT_COLOR[s],
+    cls: STATUS_CLS[s],
+  };
 });
 
 const countdownBadge = computed(() =>
@@ -130,6 +233,14 @@ const groupLabel = computed(() => {
 const groupHex = computed(() => {
   const gid = draft.value?.groupId;
   return gid && doc.groups[gid] ? taskColor(doc.groups[gid].color, isDark.value).bar : '#9E9990';
+});
+
+const accentProgressColor = computed(() => {
+  const t = draft.value;
+  if (!t) return 'var(--ws-ink)';
+  if (t.color) return taskColor(t.color, isDark.value).bar;
+  if (t.groupId && doc.groups[t.groupId]) return taskColor(doc.groups[t.groupId].color, isDark.value).bar;
+  return 'var(--ws-ink)';
 });
 
 const start = computed({
@@ -224,26 +335,89 @@ function setStatus(s: TaskStatus) {
   draft.value = applyTaskStatus(draft.value, s);
 }
 
+function toggleDoneQuick() {
+  setStatus(currentStatus.value === 'done' ? 'todo' : 'done');
+}
+
+function toggleCountdownFlag() {
+  if (!draft.value) return;
+  draft.value.countdown = !draft.value.countdown || undefined;
+}
+
+function updateStepText(id: string, text: string, finalize = false) {
+  if (!draft.value?.checklist) return;
+  if (finalize && !text.trim()) {
+    removeStep(id);
+    return;
+  }
+  const nextText = finalize ? text.trim() : text;
+  draft.value = applyChecklist(
+    draft.value,
+    draft.value.checklist.map((item) => (item.id === id ? { ...item, text: nextText } : item)),
+  );
+}
+
+function onStepTextInput(id: string, e: Event) {
+  updateStepText(id, (e.target as HTMLInputElement).value, false);
+}
+
+function onStepTextBlur(id: string, e: Event) {
+  updateStepText(id, (e.target as HTMLInputElement).value, true);
+}
+
+function onStepTextEnter(e: KeyboardEvent) {
+  (e.target as HTMLInputElement).blur();
+}
+
+function setPriority(p: TaskPriority) {
+  if (!draft.value) return;
+  draft.value.priority = p === 'none' ? undefined : p;
+}
+
+function openPriorityMenu(e: MouseEvent) {
+  const anchor = e.currentTarget as HTMLElement;
+  const items: MenuItem[] = PRIORITY_ORDER.map((p) => ({
+    label: PRIORITY_META[p].label,
+    colorDot: PRIORITY_META[p].color,
+    radio: true,
+    checked: currentPriority.value === p,
+    action: () => setPriority(p),
+  }));
+  void showMenu(items, anchor, { placement: 'bottom-end' });
+}
+
+function toggleStar() {
+  if (!draft.value) return;
+  draft.value.starred = !draft.value.starred || undefined;
+}
+
 function openStatusMenu(e: MouseEvent) {
   const anchor = e.currentTarget as HTMLElement;
-  const items: MenuItem[] = [
-    { label: '未开始', radio: true, checked: currentStatus.value === 'todo', action: () => setStatus('todo') },
-    { label: '进行中', radio: true, checked: currentStatus.value === 'in_progress', action: () => setStatus('in_progress') },
-    { label: '已完成', radio: true, checked: currentStatus.value === 'done', action: () => setStatus('done') },
-  ];
+  const items: MenuItem[] = WORKSPACE_STATUS_ORDER.map((s) => ({
+    label: STATUS_META[s].label,
+    colorDot: STATUS_DOT_COLOR[s],
+    radio: true,
+    checked: currentStatus.value === s,
+    action: () => setStatus(s),
+  }));
   void showMenu(items, anchor, { placement: 'bottom-end' });
 }
 
 function openGroupMenu(e: MouseEvent) {
   const anchor = e.currentTarget as HTMLElement;
   const items: MenuItem[] = [
-    { label: '无分组', radio: true, checked: !draft.value?.groupId, action: () => draft.value && (draft.value.groupId = undefined) },
-    ...groupList.value.map((g) => ({
-      label: g.name,
-      radio: true,
-      checked: draft.value?.groupId === g.id,
-      action: () => draft.value && (draft.value.groupId = g.id),
-    })),
+    { label: '无分组', colorDot: '#9E9990', radio: true, checked: !draft.value?.groupId, action: () => draft.value && (draft.value.groupId = undefined) },
+    ...groupList.value.map((g) => {
+      const def = getGroupIcon(g.icon);
+      return {
+        label: g.name,
+        svgPaths: def?.paths,
+        colorDot: def ? undefined : taskColor(g.color, isDark.value).bar,
+        radio: true,
+        checked: draft.value?.groupId === g.id,
+        action: () => draft.value && (draft.value.groupId = g.id),
+      };
+    }),
     { separator: true },
     {
       label: '+ 快速新建分组',
@@ -323,6 +497,7 @@ async function save(keepOpen = false) {
     }
   } else {
     await saveTask(clone(t));
+    clearPendingDraft();
   }
   if (keepOpen) {
     isNew.value = false;
@@ -363,6 +538,7 @@ async function tryClose() {
     });
     if (r !== 'primary') return;
   }
+  if (isNew.value) clearPendingDraft();
   emit('close');
 }
 
@@ -391,30 +567,70 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKey);
   clearInterval(minuteTimer);
+  if (isNew.value) clearPendingDraft();
 });
+
+defineExpose({ requestClose: tryClose });
 </script>
 
 <template>
-  <aside class="ws-inspector" role="dialog" aria-label="任务详情抽屉">
-    <div v-if="missing" class="ins-missing">
-      <p>该任务已被删除或不再存在。</p>
-      <button type="button" class="ws-cta-btn" @click="emit('close')">关闭</button>
-    </div>
+  <div class="ws-ins-host" :class="{ phone: isPhone, tablet: isTablet, compact: isCompactNav }">
+    <div v-if="isCompactNav" class="ws-ins-scrim" @click="tryClose" />
+    <aside class="ws-inspector" role="dialog" :aria-modal="isCompactNav ? 'true' : undefined" aria-label="任务详情抽屉">
+      <div v-if="isPhone" class="ins-grab" aria-hidden="true" />
+      <div v-if="missing" class="ins-missing">
+        <p>该任务已被删除或不再存在。</p>
+        <button type="button" class="ws-cta-btn" @click="emit('close')">关闭</button>
+      </div>
 
-    <template v-else-if="draft">
+      <template v-else-if="draft">
+      <div v-if="!draft.milestone && !draft.repeat" class="ins-progress-rail" aria-hidden="true">
+        <div
+          class="ins-progress-fill"
+          :style="{ width: `${draft.progress}%`, background: accentProgressColor }"
+        />
+      </div>
+
       <!-- Top Bar: Group + Status Dropdown + Close -->
       <header class="ins-header">
         <button type="button" class="ins-group-pill" @click="openGroupMenu">
-          <span class="ig-dot" :style="{ background: groupHex }" />
-          <span>{{ groupLabel }}</span>
+          <span class="ig-ico" :style="{ color: groupHex }">
+            <FGroupIcon
+              :icon="draft.groupId ? doc.groups[draft.groupId]?.icon : undefined"
+              :color="groupHex"
+              :size="13"
+            />
+          </span>
+          <span class="ins-group-name">{{ groupLabel }}</span>
           <FIcon name="chevronDown" :size="9" />
         </button>
 
         <div class="ins-head-right">
+          <button
+            type="button"
+            class="ins-prio-pill"
+            :title="`优先级：${PRIORITY_META[currentPriority].label}`"
+            @click="openPriorityMenu"
+          >
+            <PriorityGlyph :priority="currentPriority" :size="12" />
+            <span v-if="currentPriority !== 'none'" class="ins-prio-txt">{{ PRIORITY_META[currentPriority].label }}</span>
+          </button>
+
           <button type="button" class="ins-status-pill" :class="statusMeta.cls" @click="openStatusMenu">
-            <span class="is-dot" :style="{ background: statusMeta.dot }" />
+            <StatusGlyph :status="currentStatus" :size="12" />
             <span>{{ statusMeta.label }}</span>
             <FIcon name="chevronDown" :size="9" />
+          </button>
+
+          <button
+            type="button"
+            class="ins-star-btn"
+            :class="{ active: !!draft.starred }"
+            :title="draft.starred ? '取消星标置顶' : '加入星标置顶'"
+            :aria-label="draft.starred ? '取消星标置顶' : '加入星标置顶'"
+            @click="toggleStar"
+          >
+            {{ draft.starred ? '★' : '☆' }}
           </button>
 
           <button type="button" class="ws-icon-circle" title="关闭详情 (Esc)" aria-label="关闭详情" @click="tryClose">
@@ -424,22 +640,45 @@ onBeforeUnmount(() => {
       </header>
 
       <div class="ins-scroll">
-        <!-- Title + Live Countdown -->
+        <!-- Title + Inline Complete Toggle + Live Countdown -->
         <div class="ins-title-block">
-          <input
-            ref="titleInput"
-            v-model="draft.title"
-            type="text"
-            class="ins-title-input"
-            placeholder="输入任务标题…"
-            maxlength="200"
-          />
+          <div class="ins-title-row">
+            <button
+              type="button"
+              class="ins-title-glyph"
+              :title="currentStatus === 'done' ? '标为待开始' : '标为已完成'"
+              @click="toggleDoneQuick"
+            >
+              <StatusGlyph :status="currentStatus" :size="20" interactive />
+            </button>
+            <input
+              ref="titleInput"
+              v-model="draft.title"
+              type="text"
+              class="ins-title-input"
+              :class="{ done: currentStatus === 'done' }"
+              placeholder="输入任务标题…"
+              maxlength="200"
+            />
+          </div>
           <div class="ins-meta-strip">
             <span class="ins-countdown">
               <FIcon name="timer" :size="11" />
               <span>{{ countdownBadge }}</span>
             </span>
-            <span v-if="!draft.milestone && !draft.repeat" class="ins-pct">{{ draft.progress }}%</span>
+            <div class="ins-meta-right">
+              <button
+                type="button"
+                class="ins-cd-chip"
+                :class="{ active: !!draft.countdown }"
+                title="开启或关闭底部倒数日显示"
+                @click="toggleCountdownFlag"
+              >
+                <FIcon name="flag" :size="10" />
+                <span>倒数日</span>
+              </button>
+              <span v-if="!draft.milestone && !draft.repeat" class="ins-pct">{{ draft.progress }}%</span>
+            </div>
           </div>
         </div>
 
@@ -454,15 +693,15 @@ onBeforeUnmount(() => {
 
           <template v-if="!isFlex">
             <div class="ins-date-grid">
-              <FDatePicker v-model="start" :lunar="lunarOf" :width="148" />
+              <FDatePicker v-model="start" :lunar="lunarOf" :width="isPhone ? '100%' : 148" />
               <span v-if="!draft.milestone" class="ins-to">至</span>
-              <FDatePicker v-if="!draft.milestone" v-model="end" :lunar="lunarOf" :width="148" />
+              <FDatePicker v-if="!draft.milestone" v-model="end" :lunar="lunarOf" :width="isPhone ? '100%' : 148" />
             </div>
 
             <div class="ins-time-row">
               <FCheckbox v-model="allDay" label="全天" />
               <template v-if="!allDay">
-                <FTimePicker v-model="time" :width="104" />
+                <FTimePicker v-model="time" :width="isPhone ? 114 : 104" />
                 <div class="ins-dur-chips">
                   <button
                     v-for="p in DURATION_PRESETS"
@@ -508,7 +747,15 @@ onBeforeUnmount(() => {
               >
                 <svg viewBox="0 0 12 12"><path d="M2.5 6.3 5 8.8 9.5 3.6" /></svg>
               </button>
-              <span class="chk-text">{{ item.text }}</span>
+              <input
+                :value="item.text"
+                type="text"
+                class="chk-text-input"
+                placeholder="步骤内容…"
+                @input="onStepTextInput(item.id, $event)"
+                @blur="onStepTextBlur(item.id, $event)"
+                @keydown.enter.prevent="onStepTextEnter"
+              />
               <button
                 type="button"
                 class="chk-del"
@@ -616,7 +863,7 @@ onBeforeUnmount(() => {
                   :min="0"
                   :max="100"
                   :step="5"
-                  :width="240"
+                  :width="isPhone ? 200 : 240"
                   show-value
                   :format="(v: number) => `${v}%`"
                   @change="(v: number) => draft && (draft.done = v >= 100)"
@@ -664,18 +911,52 @@ onBeforeUnmount(() => {
         </button>
       </footer>
     </template>
-  </aside>
+    </aside>
+  </div>
 </template>
 
 <style scoped>
-.ws-inspector {
+.ws-ins-host {
   position: absolute;
   top: 12px;
   right: 14px;
   bottom: 14px;
-  width: 416px;
-  max-width: calc(100% - 28px);
   z-index: 30;
+  pointer-events: none;
+  display: flex;
+}
+
+.ws-ins-host.tablet {
+  position: fixed;
+  inset: 0;
+  z-index: 65;
+  padding: 12px;
+  justify-content: flex-end;
+  pointer-events: auto;
+}
+
+.ws-ins-host.phone {
+  position: fixed;
+  inset: 0;
+  z-index: 65;
+  flex-direction: column;
+  justify-content: flex-end;
+  pointer-events: auto;
+}
+
+.ws-ins-scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--ws-scrim-bg, rgba(18, 17, 15, 0.28));
+  backdrop-filter: blur(6px);
+}
+
+.ws-inspector {
+  position: relative;
+  width: 436px;
+  max-width: calc(100vw - 28px);
+  height: 100%;
+  pointer-events: auto;
   background: var(--ws-card-bg);
   border: 1px solid var(--ws-hairline);
   border-radius: 18px;
@@ -685,10 +966,46 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 
+.ws-ins-host.tablet .ws-inspector {
+  width: min(440px, 88vw);
+  max-width: 100%;
+}
+
+.ws-ins-host.phone .ws-inspector {
+  width: 100%;
+  max-width: 100%;
+  height: 92dvh;
+  max-height: 92dvh;
+  border-radius: 22px 22px 0 0;
+  border-bottom: 0;
+}
+
+.ins-grab {
+  width: 36px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--ws-hairline-strong);
+  margin: 8px auto 0;
+  flex: none;
+}
+
 .ins-missing {
   margin: auto;
   padding: 24px;
   text-align: center;
+}
+
+.ins-progress-rail {
+  height: 2.5px;
+  flex: none;
+  width: 100%;
+  background: var(--ws-hairline);
+  overflow: hidden;
+}
+
+.ins-progress-fill {
+  height: 100%;
+  transition: width 240ms var(--ws-ease-out), background-color 180ms ease;
 }
 
 .ins-header {
@@ -696,28 +1013,30 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 12px 14px;
+  gap: 6px;
+  padding: 11px 13px;
   border-bottom: 1px solid var(--ws-hairline);
 }
 
 .ins-head-right {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
+  flex: none;
 }
 
 .ins-group-pill,
-.ins-status-pill {
+.ins-status-pill,
+.ins-prio-pill {
   height: 28px;
-  padding: 0 10px;
+  padding: 0 9px;
   border-radius: 999px;
   border: 1px solid var(--ws-hairline);
   background: var(--ws-card-subtle);
   color: var(--ws-ink);
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   font: inherit;
   font-size: 12px;
   font-weight: 550;
@@ -725,22 +1044,91 @@ onBeforeUnmount(() => {
   transition: background-color 130ms ease, border-color 130ms ease;
 }
 
+.ins-group-pill {
+  min-width: 0;
+  max-width: 140px;
+}
+
+.ins-group-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ins-prio-pill {
+  padding: 0 8px;
+  color: var(--ws-ink-secondary);
+}
+
+.ins-prio-txt {
+  font-size: 11.5px;
+}
+
+.ins-star-btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--ws-hairline);
+  background: var(--ws-card-subtle);
+  color: var(--ws-ink-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+
+.ins-star-btn:hover {
+  border-color: var(--ws-hairline-strong);
+  background: var(--ws-card-hover);
+  color: var(--ws-ink);
+}
+
+.ins-star-btn.active {
+  color: #D97706;
+  border-color: rgba(217, 119, 6, 0.35);
+  background: rgba(245, 158, 11, 0.12);
+}
+
 .ins-group-pill:hover,
-.ins-status-pill:hover {
+.ins-status-pill:hover,
+.ins-prio-pill:hover {
   border-color: var(--ws-hairline-strong);
   background: var(--ws-card-hover);
 }
 
+.ins-status-pill.review {
+  background: var(--ws-pill-review-bg);
+  border-color: transparent;
+  color: var(--ws-pill-review-ink);
+}
+
 .ins-status-pill.progress {
-  background: rgba(181, 71, 13, 0.1);
-  border-color: rgba(181, 71, 13, 0.25);
-  color: #9A3B08;
+  background: var(--ws-progress-bg);
+  border-color: var(--ws-progress-border);
+  color: var(--ws-progress-ink);
+}
+
+.ins-status-pill.backlog {
+  background: var(--ws-pill-backlog-bg);
+  border-color: transparent;
+  color: var(--ws-pill-backlog-ink);
 }
 
 .ins-status-pill.done {
-  background: rgba(16, 124, 16, 0.1);
-  border-color: rgba(16, 124, 16, 0.24);
-  color: #0F7B0F;
+  background: var(--ws-success-bg);
+  border-color: var(--ws-success-border);
+  color: var(--ws-success);
+}
+
+.ig-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
 }
 
 .ig-dot,
@@ -767,8 +1155,28 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
+.ins-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ins-title-glyph {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex: none;
+}
+
 .ins-title-input {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   border: 0;
   background: transparent;
   color: var(--ws-ink);
@@ -780,11 +1188,50 @@ onBeforeUnmount(() => {
   padding: 2px 0;
 }
 
+.ins-title-input.done {
+  text-decoration: line-through;
+  color: var(--ws-ink-muted);
+}
+
 .ins-meta-strip {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+
+.ins-meta-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ins-cd-chip {
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--ws-hairline);
+  background: transparent;
+  color: var(--ws-ink-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.ins-cd-chip:hover {
+  border-color: var(--ws-hairline-strong);
+  color: var(--ws-ink);
+}
+
+.ins-cd-chip.active {
+  background: var(--ws-ink);
+  border-color: var(--ws-ink);
+  color: var(--ws-ink-inverse);
 }
 
 .ins-countdown {
@@ -914,7 +1361,7 @@ onBeforeUnmount(() => {
   top: -6px;
   bottom: -6px;
   width: 1.5px;
-  background: rgba(28, 25, 23, 0.12);
+  background: var(--ws-hairline-strong);
 }
 
 .chk-node:first-child .chk-rail {
@@ -939,16 +1386,26 @@ onBeforeUnmount(() => {
   background: var(--ws-ink);
 }
 
-.chk-text {
+.chk-text-input {
   flex: 1;
   min-width: 0;
-  font-size: 13px;
+  border: 0;
+  background: transparent;
+  padding: 2px 4px;
+  border-radius: 6px;
   color: var(--ws-ink);
-  word-break: break-word;
-  transition: color 140ms ease;
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+  transition: color 140ms ease, background-color 120ms ease;
 }
 
-.chk-node.done .chk-text {
+.chk-text-input:focus {
+  background: var(--ws-card-bg);
+  box-shadow: 0 0 0 1px var(--ws-hairline-strong);
+}
+
+.chk-node.done .chk-text-input {
   text-decoration: line-through;
   color: var(--ws-ink-muted);
 }
@@ -967,12 +1424,13 @@ onBeforeUnmount(() => {
 }
 
 .chk-node:hover .chk-del,
+.chk-node:focus-within .chk-del,
 .ins-doc-item:hover .chk-del {
   opacity: 1;
 }
 
 .chk-del:hover {
-  background: rgba(28, 25, 23, 0.08);
+  background: var(--ws-pill-hover);
   color: var(--ws-ink);
 }
 
@@ -1220,5 +1678,36 @@ onBeforeUnmount(() => {
   height: 32px;
   padding: 0 16px;
   font-size: 12.5px;
+}
+
+.ws-ins-host.phone .ins-header {
+  flex-wrap: wrap;
+  row-gap: 6px;
+  padding: 8px 14px 10px;
+}
+
+.ws-ins-host.phone .ins-scroll {
+  padding: 12px 14px 24px;
+}
+
+.ws-ins-host.phone .ins-date-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+}
+
+.ws-ins-host.phone .ins-footer {
+  padding: 10px 14px max(12px, env(safe-area-inset-bottom));
+}
+
+.ws-ins-host.phone .ins-save-btn,
+.ws-ins-host.phone .ins-cancel-btn,
+.ws-ins-host.phone .ins-del-btn {
+  height: 38px;
+}
+
+@media (hover: none) {
+  .chk-del {
+    opacity: 0.55;
+  }
 }
 </style>

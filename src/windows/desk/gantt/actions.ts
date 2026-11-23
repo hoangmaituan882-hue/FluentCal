@@ -1,9 +1,11 @@
 import { nextTick, ref } from 'vue';
-import { confirm, showMenu, type MenuItem } from '@/fluent';
+import { confirm, showMenu, taskColor, type MenuItem } from '@/fluent';
 import type { GanttScale, Group, ISODate } from '@/types';
 import { addDays } from '@/lib/date';
 import { UNGROUPED, UNGROUPED_GROUP } from '@/lib/gantt';
+import { buildGroupIconMenuItems } from '@/lib/groupIcons';
 import { addTask, deleteGroup, makeGroup, saveGroup, saveTask } from '@/lib/tasks';
+import { isDark } from '@/composables/theme';
 import { doc, groupList, patchSettings, put, storeState } from '@/stores/doc';
 import { now } from '@/composables/now';
 import { colorSwatches } from '../menus';
@@ -112,12 +114,22 @@ function moveGroup(g: Group, dir: -1 | 1) {
 export function groupMenu(g: Group, at: { x: number; y: number } | DOMRect) {
   if (storeState.readOnly) return;
   const real = g.id !== UNGROUPED;
+  const hex = taskColor(g.color, isDark.value).bar;
   const items: (MenuItem | false)[] = [
     { label: '添加任务', icon: 'add', action: () => addInGroup(g.id) },
     { label: '添加里程碑', icon: 'flag', action: () => addInGroup(g.id, true) },
     real && { separator: true },
     real && { label: '重命名', icon: 'edit', shortcut: 'F2', action: () => void startRename('group', g.id) },
     real && { swatches: colorSwatches(g.color, false), onSwatch: (k) => void saveGroup({ ...g, color: k }) },
+    real && {
+      label: '分组图标…',
+      icon: 'star',
+      children: buildGroupIconMenuItems(g.icon, hex, (key) => void saveGroup({ ...g, icon: key })),
+    },
+    real && {
+      label: g.dividerAfter ? '移除侧栏分隔线' : '添加侧栏分隔线',
+      action: () => void saveGroup({ ...g, dividerAfter: !g.dividerAfter || undefined }),
+    },
     real && { label: '上移', icon: 'chevronUp', action: () => moveGroup(g, -1) },
     real && { label: '下移', icon: 'chevronDown', action: () => moveGroup(g, 1) },
     real && { separator: true },

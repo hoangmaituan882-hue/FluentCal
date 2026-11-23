@@ -155,4 +155,27 @@ function key(e: KeyboardEvent) {
 .f-dlg-enter-from { opacity: 0; }
 .f-dlg-enter-from .f-dlg { transform: scale(1.05); opacity: 0; }
 .f-dlg-leave-to { opacity: 0; }
+
+@media (max-width: 639px) {
+  .f-dlg-overlay {
+    align-items: flex-end;
+    padding:
+      12px
+      max(12px, env(safe-area-inset-right))
+      max(12px, env(safe-area-inset-bottom))
+      max(12px, env(safe-area-inset-left));
+  }
+  .f-dlg {
+    width: 100% !important;
+    max-width: 100%;
+    max-height: calc(100dvh - 24px);
+    border-radius: 18px;
+  }
+  .body {
+    padding: 18px 18px 14px;
+  }
+  .foot {
+    padding: 14px 18px;
+  }
+}
 </style>

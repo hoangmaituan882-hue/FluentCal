@@ -9,9 +9,12 @@ import {
   addDays,
   addMonths,
   formatFriendly,
+  isoWeek,
   monthWeeks,
+  pad2,
   parts,
   startOfMonth,
+  startOfWeek,
   weekday,
   WEEKDAY_SHORT,
 } from "@/lib/date";
@@ -179,6 +182,43 @@ const monthOccs = computed(() =>
 );
 const monthTaskCount = (d: ISODate) =>
   monthOccs.value.filter((o) => o.start <= d && o.end >= d).length;
+
+type CalDetent = "week" | "split" | "month";
+const calDetent = ref<CalDetent>("split");
+const weekRowCells = computed(() => {
+  const ws = startOfWeek(selected.value, doc.settings.calendar.weekStart);
+  return Array.from({ length: 7 }, (_, i) => addDays(ws, i));
+});
+function taskBarColor(t: Task): string {
+  const key = t.color || (t.groupId ? doc.groups[t.groupId]?.color : undefined) || "blue";
+  return taskColor(key, isDark.value).bar;
+}
+function dayOccList(d: ISODate): Occurrence[] {
+  return monthOccs.value.filter((o) => o.start <= d && o.end >= d);
+}
+function dayDotColors(d: ISODate): string[] {
+  return dayOccList(d)
+    .slice(0, 5)
+    .map((o) => taskBarColor(o.task));
+}
+function cycleCalDetent() {
+  if (calDetent.value === "split") calDetent.value = "week";
+  else if (calDetent.value === "week") calDetent.value = "month";
+  else calDetent.value = "split";
+}
+const selectedAllDayOccs = computed(() =>
+  selectedItems.value.filter((o) => !o.task.time || o.start !== o.end),
+);
+const selectedTimedOccs = computed(() =>
+  selectedItems.value.filter((o) => !!o.task.time && o.start === o.end),
+);
+function formatEndTimeStr(time?: string, dur?: number): string {
+  if (!time) return "";
+  const [hh, mm] = time.split(":").map(Number);
+  if (Number.isNaN(hh) || Number.isNaN(mm)) return "";
+  const total = hh * 60 + mm + (dur && dur > 0 ? dur : 60);
+  return `${pad2(Math.floor(total / 60) % 24)}:${pad2(total % 60)}`;
+}
 const mergePlan = computed(() =>
   pendingImport.value ? planMerge(doc, pendingImport.value) : null,
 );
@@ -732,15 +772,21 @@ onBeforeUnmount(() => {
         </section>
         <section v-else-if="tab === 'calendar'" class="calendar-page">
           <div class="calendar-toolbar">
-            <button type="button" class="nav-btn" @click="nextMonth(-1)">
-              ‹
-            </button>
-            <h2>{{ activeTitle }}</h2>
-            <button type="button" class="nav-btn" @click="nextMonth(1)">
-              ›</button
-            ><button type="button" class="today-btn" @click="goToday">
-              今天
-            </button>
+            <div class="cal-title-block">
+              <h2>{{ activeTitle }}</h2>
+              <span class="cal-week-badge">w{{ isoWeek(selected) }} · 农历{{ dayInfo(selected).lunarLabel }}</span>
+            </div>
+            <div class="cal-step-group">
+              <button type="button" class="nav-btn" aria-label="上个月" @click="nextMonth(-1)">
+                ‹
+              </button>
+              <button type="button" class="today-btn" @click="goToday">
+                今天
+              </button>
+              <button type="button" class="nav-btn" aria-label="下个月" @click="nextMonth(1)">
+                ›
+              </button>
+            </div>
           </div>
           <div class="weekday-row">
             <span
@@ -756,9 +802,12 @@ onBeforeUnmount(() => {
               }}</span
             >
           </div>
-          <div class="month-grid">
+          <div
+            class="month-grid"
+            :class="[`detent-${calDetent}`]"
+          >
             <button
-              v-for="d in monthCells"
+              v-for="d in (calDetent === 'week' ? weekRowCells : monthCells)"
               :key="d"
               type="button"
               class="month-day"
@@ -779,24 +828,43 @@ onBeforeUnmount(() => {
               }"
               @click="pickDay(d)"
             >
-              <b>{{ parts(d)[2] }}</b
-              ><small>{{ dayInfo(d).text }}</small
-              ><i
-                v-if="monthTaskCount(d)"
-                :style="{
-                  background: taskColor(
-                    monthOccs.find((o) => o.start <= d && o.end >= d)?.task
-                      .color,
-                    isDark,
-                  ).bar,
-                }"
-              />
+              <b class="cal-num-pill">{{ parts(d)[2] }}</b>
+              <div v-if="calDetent === 'week' || calDetent === 'month'" class="cal-mini-list">
+                <span
+                  v-for="(o, idx) in dayOccList(d).slice(0, 3)"
+                  :key="`${o.task.id}:${idx}`"
+                  class="cal-mini-item"
+                  :style="{ color: taskBarColor(o.task) }"
+                >
+                  {{ o.task.title }}
+                </span>
+              </div>
+              <template v-else>
+                <small>{{ dayInfo(d).text }}</small>
+                <span class="cal-dots-row">
+                  <i
+                    v-for="(c, idx) in dayDotColors(d)"
+                    :key="idx"
+                    :style="{ background: c }"
+                  />
+                </span>
+              </template>
             </button>
           </div>
-          <div class="selected-day">
+
+          <button
+            type="button"
+            class="cal-split-grabber"
+            aria-label="切换周视图、分栏视图与全月详情"
+            @click="cycleCalDetent"
+          >
+            <span class="cal-grabber-bar" />
+          </button>
+
+          <div v-if="calDetent !== 'month'" class="selected-day">
             <div class="selected-day-head">
               <h3>
-                {{ selected === now ? "今天" : formatFriendly(selected) }}
+                {{ selected === now ? "今天 · " + formatFriendly(selected) : formatFriendly(selected) }}
               </h3>
               <button
                 type="button"
@@ -807,20 +875,35 @@ onBeforeUnmount(() => {
               </button>
             </div>
             <p v-if="!selectedItems.length" class="muted">这一天还没有任务</p>
+
+            <div v-if="selectedAllDayOccs.length" class="cal-allday-stack">
+              <button
+                v-for="o in selectedAllDayOccs"
+                :key="`all:${o.task.id}@${o.date}`"
+                type="button"
+                class="cal-allday-banner"
+                :style="{ '--pill-c': taskBarColor(o.task) }"
+                @click="openTask(o.task, o.date)"
+              >
+                <span class="cab-title" :class="{ struck: o.done }">{{ o.task.title }}</span>
+                <strong class="cab-badge">全天</strong>
+              </button>
+            </div>
+
             <button
-              v-for="o in selectedItems"
-              :key="`${o.task.id}@${o.date}`"
+              v-for="o in selectedTimedOccs"
+              :key="`timed:${o.task.id}@${o.date}`"
               type="button"
               class="compact-task"
               @click="openTask(o.task, o.date)"
             >
               <span
                 class="task-accent"
-                :style="{ background: taskColor(o.task.color || (o.task.groupId ? doc.groups[o.task.groupId]?.color : undefined), isDark).bar }"
+                :style="{ background: taskBarColor(o.task) }"
               /><span :class="{ struck: o.done }">{{ o.task.title }}</span
-              ><small
-                >{{ displayTime(o.task)
-                }}{{ doneText(o) ? " · " + doneText(o) : o.done ? " · 已完成" : "" }}</small
+              ><small class="ct-time"
+                ><strong>{{ o.task.time }}</strong
+                ><span> - {{ formatEndTimeStr(o.task.time, o.task.duration) }}</span></small
               >
             </button>
           </div>
@@ -1386,98 +1469,217 @@ h1 span {
 .calendar-toolbar {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin: 2px 0 15px;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 2px 0 12px;
+}
+.cal-title-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 .calendar-toolbar h2 {
-  flex: 1;
-  margin: 0 6px;
-  font-size: 20px;
+  margin: 0;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+}
+.cal-week-badge {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.cal-step-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 999px;
+  border: 1px solid var(--card-stroke);
+  background: var(--card-fill);
 }
 .nav-btn {
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
-  font-size: 28px;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  font-size: 20px;
 }
 .today-btn {
-  margin-left: auto;
-  padding: 7px 10px;
-  border-radius: 9px;
+  padding: 5px 10px;
+  border-radius: 999px;
   background: var(--subtle-fill-hover);
-  color: var(--accent-text);
+  color: var(--text-primary);
   font-size: 12px;
+  font-weight: 650;
 }
 .weekday-row,
 .month-grid {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
-  gap: 4px;
+  gap: 2px;
 }
 .weekday-row {
-  margin-bottom: 5px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--divider);
+  padding-bottom: 4px;
 }
 .weekday-row span {
   padding: 4px 0;
   color: var(--text-secondary);
   text-align: center;
   font-size: 11px;
+  font-weight: 650;
 }
 .weekday-row .rest {
-  color: var(--critical);
+  color: var(--text-tertiary);
 }
 .month-grid {
-  padding: 6px;
+  padding: 6px 4px;
   border: 1px solid var(--card-stroke);
   border-radius: 16px;
   background: var(--card-fill);
 }
+.month-grid.detent-month .month-day {
+  min-height: 76px;
+}
+.month-grid.detent-week .month-day {
+  min-height: 82px;
+}
 .month-day {
   position: relative;
   min-height: 54px;
-  padding: 7px 2px 4px;
-  border: 1px solid transparent;
-  border-radius: 11px;
+  padding: 5px 2px 4px;
+  border: 0;
+  border-radius: 10px;
   background: transparent;
   color: inherit;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
-.month-day b {
-  display: block;
-  font-size: 14px;
-  font-weight: 550;
+.cal-num-pill {
+  width: 28px;
+  height: 25px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14.5px;
+  font-weight: 560;
 }
 .month-day small {
   display: block;
-  height: 14px;
-  margin-top: 2px;
+  height: 13px;
+  margin-top: 1px;
   color: var(--text-secondary);
-  font-size: 10px;
+  font-size: 9.5px;
 }
-.month-day i {
+.cal-dots-row {
+  min-height: 6px;
+  margin-top: 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2.5px;
+}
+.cal-dots-row i {
   display: block;
-  width: 5px;
-  height: 5px;
-  margin: 1px auto 0;
+  width: 4.5px;
+  height: 4.5px;
   border-radius: 50%;
+}
+.cal-mini-list {
+  width: 100%;
+  margin-top: 3px;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5px;
+  overflow: hidden;
+}
+.cal-mini-item {
+  font-size: 9.5px;
+  font-weight: 650;
+  line-height: 1.22;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
 }
 .month-day.dim {
   opacity: 0.35;
 }
-.month-day.rest b {
-  color: var(--critical);
+.month-day.today:not(.selected) .cal-num-pill {
+  color: #e85d2a;
+  font-weight: 800;
 }
-.month-day.today b {
-  color: var(--accent-text);
+.month-day.selected .cal-num-pill {
+  background: var(--text-primary);
+  color: var(--solid-base);
+  font-weight: 720;
 }
-.month-day.today {
-  background: color-mix(in srgb, var(--accent-fill) 10%, transparent);
+.month-day.selected.today .cal-num-pill {
+  background: #e85d2a;
+  color: #ffffff;
 }
-.month-day.selected {
-  border-color: var(--accent-fill);
-  background: color-mix(in srgb, var(--accent-fill) 15%, transparent);
+.cal-split-grabber {
+  width: 100%;
+  height: 22px;
+  border: 0;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.cal-grabber-bar {
+  width: 36px;
+  height: 4.5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-secondary) 38%, transparent);
 }
 .selected-day {
-  margin-top: 20px;
+  margin-top: 4px;
+}
+.cal-allday-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+.cal-allday-banner {
+  --pill-c: #d97706;
+  width: 100%;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--pill-c) 14%, var(--card-fill));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  text-align: left;
+}
+.cab-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 680;
+  color: var(--pill-c);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cab-badge {
+  flex: none;
+  font-size: 12px;
+  font-weight: 720;
+  color: var(--text-primary);
+}
+.ct-time {
+  font-variant-numeric: tabular-nums;
+}
+.ct-time strong {
+  color: var(--text-primary);
 }
 .selected-day-head {
   display: flex;

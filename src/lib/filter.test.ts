@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Group } from '@/types';
-import { filterNames, filterRows, filterTip, newTaskGroup, shown, tidyFilter, toggleFilter } from './filter';
+import { clusterSpotlightState, filterNames, filterRows, filterTip, newTaskGroup, shown, taskSpotlightState, tidyFilter, toggleFilter } from './filter';
 import { mk } from './testing';
 
 const groups: Record<string, Group> = {
@@ -70,5 +70,29 @@ describe('filter by group', () => {
     expect(newTaskGroup([''])).toBeUndefined();
     expect(newTaskGroup(['bday', 'work'])).toBeUndefined();
     expect(newTaskGroup([])).toBeUndefined();
+  });
+
+  it('computes two-stage hover spotlight and click blur-dissolve states cleanly', () => {
+    // idle
+    expect(tasks.map((t) => taskSpotlightState(groups, [], null, t))).toEqual(['normal', 'normal', 'normal', 'normal', 'normal']);
+
+    // hover preview (no locked selection): matching normal, non-matching dimmed
+    expect(tasks.map((t) => taskSpotlightState(groups, [], 'work', t))).toEqual(['normal', 'dimmed', 'dimmed', 'dimmed', 'normal']);
+
+    // hover ungrouped pill: matches both ungrouped and deleted-group task
+    expect(tasks.map((t) => taskSpotlightState(groups, [], '', t))).toEqual(['dimmed', 'dimmed', 'normal', 'normal', 'dimmed']);
+
+    // click lock: matching normal, rest dissolved
+    expect(tasks.map((t) => taskSpotlightState(groups, ['work'], 'work', t))).toEqual(['normal', 'dissolved', 'dissolved', 'dissolved', 'normal']);
+    expect(tasks.map((t) => taskSpotlightState(groups, ['work'], null, t))).toEqual(['normal', 'dissolved', 'dissolved', 'dissolved', 'normal']);
+
+    // click lock + hover another unselected pill: hovered becomes dimmed (peeks through), locked stays normal, rest dissolved
+    expect(tasks.map((t) => taskSpotlightState(groups, ['work'], 'bday', t))).toEqual(['normal', 'dimmed', 'dissolved', 'dissolved', 'normal']);
+
+    // cluster spotlight aggregation: normal > dimmed > dissolved
+    expect(clusterSpotlightState(groups, ['work'], 'bday', [tasks[0], tasks[2]])).toBe('normal');
+    expect(clusterSpotlightState(groups, ['work'], 'bday', [tasks[1], tasks[2]])).toBe('dimmed');
+    expect(clusterSpotlightState(groups, ['work'], null, [tasks[1], tasks[2]])).toBe('dissolved');
+    expect(clusterSpotlightState(groups, ['work'], null, [])).toBe('normal');
   });
 });

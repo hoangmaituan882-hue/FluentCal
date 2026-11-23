@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { t as tr } from '@/i18n';
 import { computed, ref, watch } from 'vue';
-import { FIcon, taskColor } from '@/fluent';
+import { FGroupIcon, FIcon, taskColor } from '@/fluent';
 import type { ISODate } from '@/types';
 import {
   addDays,
@@ -20,7 +20,7 @@ import { doc, storeState } from '@/stores/doc';
 import { isDark } from '@/composables/theme';
 import { now } from '@/composables/now';
 import { defaultWeeksStart, goToday, openEditor, openSettings, shownTasks, ui } from './state';
-import { chipMenu, moreMenu } from './menus';
+import { cellMenu, chipMenu, moreMenu } from './menus';
 
 const miniCursor = ref<ISODate>(startOfMonth(ui.cursor));
 watch(
@@ -274,6 +274,7 @@ async function addQuick() {
           :aria-label="`${d.date}${d.count ? `，${d.count} 项事项` : ''}`"
           @click="pickDay(d.date)"
           @dblclick="!storeState.readOnly && openEditor({ mode: 'new', start: d.date })"
+          @contextmenu.prevent="cellMenu(d.date, { x: $event.clientX, y: $event.clientY })"
         >
           <span v-if="d.cornerKind" class="corner-dot" :class="d.cornerKind" aria-hidden="true" />
           <span class="day-num">{{ d.dayNum }}</span>
@@ -385,7 +386,14 @@ async function addQuick() {
             <div v-if="item.task.time || spanMeta(item) || groupName(item) || item.task.repeat" class="item-meta">
               <span v-if="item.task.time" class="meta-time">{{ item.task.time }}</span>
               <span v-if="spanMeta(item)">{{ spanMeta(item) }}</span>
-              <span v-if="groupName(item)" class="meta-group">{{ groupName(item) }}</span>
+              <span v-if="groupName(item)" class="meta-group">
+                <FGroupIcon
+                  v-if="item.task.groupId && doc.groups[item.task.groupId]?.icon"
+                  :icon="doc.groups[item.task.groupId].icon"
+                  :size="10"
+                />
+                {{ groupName(item) }}
+              </span>
               <FIcon v-if="item.task.repeat" name="repeat" :size="10" class="meta-rep" />
             </div>
           </div>
@@ -1013,6 +1021,9 @@ async function addQuick() {
   font-variant-numeric: tabular-nums;
 }
 .meta-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   padding: 0 4px;
   border-radius: 4px;
   background: var(--sb-wd-bg);

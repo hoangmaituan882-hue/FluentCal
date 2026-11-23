@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { countdowns } from './countdown';
+import { countdowns, customCountdownTasks, describeCustomCountdown } from './countdown';
 import type { Task } from '@/types';
 import { DEFAULT_SETTINGS, mergeDefaults } from '@/defaults';
 import { setHolidayOverrides } from './lunar';
@@ -55,5 +55,61 @@ describe('countdown sources', () => {
     expect(sameDay[0]?.label).toContain('清明');
     expect(countdowns([task('u')], '2026-11-21', false, false, [])).toEqual([]);
     expect(countdowns([task('u')], '2026-11-21', false, false, ['']).map(item => item.key)).toEqual(['u']);
+  });
+
+  it('supports custom countdowns (down/up/pinned/yearly) and still returns them when holidayCountdown is on alone', () => {
+    const anniv: Task = {
+      ...task('anniv', undefined, true),
+      title: '入职纪念日',
+      start: '2025-11-23',
+      end: '2025-11-23',
+      countdownOnly: true,
+      countdownMode: 'up',
+      countdownPinned: true,
+      color: 'orange',
+    };
+    const exam: Task = {
+      ...task('exam', undefined, true),
+      title: '考试',
+      start: '2026-12-01',
+      end: '2026-12-01',
+      countdownOnly: true,
+    };
+    const yearlyBday: Task = {
+      ...task('bday', undefined, true),
+      title: '生日',
+      start: '2025-11-30',
+      end: '2025-11-30',
+      countdownOnly: true,
+      repeat: { freq: 'yearly', interval: 1 },
+    };
+    const futureUp: Task = {
+      ...task('fut', undefined, true),
+      title: '未来起算日',
+      start: '2026-11-28',
+      end: '2026-11-28',
+      countdownOnly: true,
+      countdownMode: 'up',
+    };
+    const res = countdowns([exam, yearlyBday, anniv, futureUp], '2026-11-23', true, true, [], false, false);
+    // Pinned anniversary comes first despite higher elapsed day count, and holidayCountdown alone does not drop custom items
+    expect(res[0]).toMatchObject({ key: 'anniv', mode: 'up', days: 365, pinned: true, color: 'orange', custom: true });
+    expect(res.find(i => i.key === 'fut')).toMatchObject({ mode: 'down', days: 5 });
+    expect(res.find(i => i.key === 'bday')).toMatchObject({ date: '2026-11-30', days: 7 });
+    expect(res.find(i => i.key === 'exam')).toMatchObject({ date: '2026-12-01', days: 8 });
+    expect(res.some(i => i.key.startsWith('holiday:'))).toBe(true);
+  });
+
+  it('lists custom countdowns and describes expired one-off targets', () => {
+    const expired: Task = { ...task('old', undefined, true), start: '2026-11-10', end: '2026-11-10', countdownOnly: true };
+    const regular = task('reg', undefined, false);
+    const list = customCountdownTasks([regular, expired]);
+    expect(list.map(t => t.id)).toEqual(['old']);
+    expect(describeCustomCountdown(expired, '2026-11-23')).toEqual({
+      days: 13,
+      mode: 'down',
+      expired: true,
+      nextDate: '2026-11-10',
+    });
   });
 });

@@ -1,86 +1,144 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from 'vue';
-import { FIcon, taskColor } from '@/fluent';
-import { isDark } from '@/composables/theme';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { confirm, FIcon, place, showMenu, type MenuItem } from '@/fluent';
+import type { Group, Task } from '@/types';
+import { isServer, isTauri } from '@/api';
 import { now } from '@/composables/now';
 import { syncNow, syncStatus, watchSync } from '@/composables/sync';
 import { statusLine } from '@/lib/syncText';
-import { effectiveStatus } from '@/lib/taskMeta';
-import { makeGroup, saveGroup } from '@/lib/tasks';
-import { doc, groupList, taskList } from '@/stores/doc';
-import { classifyTaskBucket, relativeTimeLabel, type WorkspacePageKind } from './workspaceModel';
+import { effectiveWorkspaceStatus } from '@/lib/taskMeta';
+import { deleteGroup, makeGroup, saveGroup, saveTask } from '@/lib/tasks';
+import { groupList, put, taskList } from '@/stores/doc';
+import { notify } from '../desk/state';
+import GroupSquircle from './GroupSquircle.vue';
+import StatusGlyph from './StatusGlyph.vue';
+import { cancelTaskPreview, hideTaskPreview, showTaskPreview } from './useTaskHoverPreview';
+import { classifyTaskBucket, type WorkspacePageKind } from './workspaceModel';
+import { buildGroupCustomizeChildren, openTaskContextMenu } from './workspaceMenus';
 
 watchSync();
+
+type AreaSubTab = 'overview' | 'tasks' | 'calendar' | 'resources';
 
 const props = defineProps<{
   open: boolean;
   activeKind: WorkspacePageKind;
   activeGroupId?: string;
+  areaSubTab: AreaSubTab;
   inboxCount: number;
   openCount: number;
+  countdownCount: number;
+  wsTheme: 'light' | 'dark';
 }>();
 
 const emit = defineEmits<{
   toggle: [];
   navigate: [kind: WorkspacePageKind, groupId?: string];
-  newTask: [];
+  openAreaSub: [groupId: string, sub: AreaSubTab];
+  newTask: [groupId?: string];
+  quickSearch: [];
   openTask: [taskId: string];
   summonDesk: [];
   openSettings: [];
+  toggleTheme: [];
+  logout: [];
 }>();
 
-const areasExpanded = ref(true);
-const recentExpanded = ref(true);
+const starredExpanded = ref(true);
+const groupsExpanded = ref(true);
+const expandedGroups = ref<Record<string, boolean>>({});
 const addingGroup = ref(false);
 const newGroupName = ref('');
 const groupInputRef = ref<HTMLInputElement>();
+
+const renamingGroupId = ref<string | null>(null);
+const renameDraft = ref('');
+let renameInputEl: HTMLInputElement | null = null;
+
+const preview = ref<{ groupId: string; icon?: string; iconOverride?: boolean; color?: string } | null>(null);
+
+watch(
+  () => props.activeGroupId,
+  (gid) => {
+    if (gid) expandedGroups.value[gid] = true;
+  },
+  { immediate: true },
+);
 
 const navItems = computed(() => [
   { kind: 'daily' as const, label: '今日聚焦', icon: 'today', count: 0 },
   { kind: 'calendar' as const, label: '日历视图', icon: 'calendar', count: 0 },
   { kind: 'inbox' as const, label: '收集箱', icon: 'flag', count: props.inboxCount },
-  { kind: 'tasks' as const, label: '待办清单', icon: 'checklist', count: props.openCount },
+  { kind: 'tasks' as const, label: '全部待办', icon: 'checklist', count: props.openCount },
+  { kind: 'countdowns' as const, label: '倒数日', icon: 'timer', count: props.countdownCount },
   { kind: 'gantt' as const, label: '项目甘特', icon: 'gantt', count: 0 },
 ]);
+
+const starredTasks = computed(() =>
+  taskList.value
+    .filter((t) => !t.countdownOnly && !!t.starred)
+    .sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0)),
+);
 
 const groupOpenCounts = computed(() => {
   const map = new Map<string, number>();
   const todayIso = now.value;
   for (const t of taskList.value) {
-    if (!t.groupId) continue;
+    if (t.countdownOnly || !t.groupId) continue;
     if (classifyTaskBucket(t, todayIso) === 'completed') continue;
     map.set(t.groupId, (map.get(t.groupId) ?? 0) + 1);
   }
   return map;
 });
 
-const recentTasks = computed(() => {
-  const active = taskList.value.slice();
-  active.sort((a, b) => {
-    const aIp = effectiveStatus(a) === 'in_progress' ? 1 : 0;
-    const bIp = effectiveStatus(b) === 'in_progress' ? 1 : 0;
-    if (aIp !== bIp) return bIp - aIp;
-    return (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0);
-  });
-  return active.slice(0, 6);
-});
-
-function groupHex(colorKey: string | undefined): string {
-  return taskColor(colorKey, isDark.value).bar;
+function isGroupExpanded(gid: string): boolean {
+  if (expandedGroups.value[gid] !== undefined) return expandedGroups.value[gid];
+  return props.activeGroupId === gid;
 }
 
-function dotColor(taskId: string): string {
-  const t = doc.tasks[taskId];
-  if (!t) return '#8A857E';
-  if (effectiveStatus(t) === 'in_progress') return '#D97706';
-  const gColor = t.groupId ? doc.groups[t.groupId]?.color : undefined;
-  if (!t.color && !gColor) return '#9E9990';
-  return taskColor(t.color || gColor, isDark.value).bar;
+function toggleGroupTree(g: Group) {
+  const next = !isGroupExpanded(g.id);
+  expandedGroups.value[g.id] = next;
+  if (next && !(props.activeKind === 'area' && props.activeGroupId === g.id)) {
+    emit('openAreaSub', g.id, 'tasks');
+  }
+}
+
+function displayGroupIcon(g: Group): string | undefined {
+  if (preview.value?.groupId === g.id && preview.value.iconOverride) {
+    return preview.value.icon;
+  }
+  return g.icon;
+}
+
+function displayGroupColorKey(g: Group): string {
+  return preview.value?.groupId === g.id && preview.value.color ? preview.value.color : g.color;
+}
+
+function openWorkspaceMenu(e: MouseEvent) {
+  const anchor = e.currentTarget as HTMLElement;
+  const items: MenuItem[] = [
+    { label: '新建任务…', icon: 'add', shortcut: 'Ctrl+N', action: () => emit('newTask') },
+    { label: '搜索与命令…', icon: 'search', shortcut: 'Ctrl+K', action: () => emit('quickSearch') },
+    { separator: true },
+    {
+      label: props.wsTheme === 'dark' ? '切换浅色工作台' : '切换深曜石暗色',
+      icon: props.wsTheme === 'dark' ? 'sun' : 'moon',
+      action: () => emit('toggleTheme'),
+    },
+    ...(syncStatus.enabled ? [{ label: '立即同步', icon: 'sync', action: () => void syncNow() }] : []),
+    ...(isTauri ? [{ label: '呼出桌面贴片日历', icon: 'pin', action: () => emit('summonDesk') }] : []),
+    { separator: true },
+    { label: '偏好设置…', icon: 'settings', shortcut: 'Ctrl+,', action: () => emit('openSettings') },
+    ...(isServer ? [{ separator: true as const }, { label: '退出登录', icon: 'power', danger: true, action: () => emit('logout') }] : []),
+  ];
+  void showMenu(items, anchor, { placement: 'bottom-start' });
 }
 
 const GROUP_PALETTE = ['blue', 'teal', 'green', 'orange', 'purple', 'indigo', 'red', 'gray'];
 
 async function startAddGroup() {
+  groupsExpanded.value = true;
   addingGroup.value = true;
   newGroupName.value = '';
   await nextTick();
@@ -88,6 +146,7 @@ async function startAddGroup() {
 }
 
 async function submitNewGroup() {
+  if (!addingGroup.value) return;
   const name = newGroupName.value.trim();
   addingGroup.value = false;
   newGroupName.value = '';
@@ -95,26 +154,240 @@ async function submitNewGroup() {
   const color = GROUP_PALETTE[groupList.value.length % GROUP_PALETTE.length];
   const g = makeGroup(name, color);
   await saveGroup(g);
-  emit('navigate', 'area', g.id);
+  expandedGroups.value[g.id] = true;
+  emit('openAreaSub', g.id, 'tasks');
 }
+
+function cancelNewGroup() {
+  addingGroup.value = false;
+  newGroupName.value = '';
+}
+
+function setRenameInput(el: unknown) {
+  renameInputEl = el instanceof HTMLInputElement ? el : null;
+}
+
+async function startRenameGroup(g: Group) {
+  renamingGroupId.value = g.id;
+  renameDraft.value = g.name;
+  await nextTick();
+  renameInputEl?.focus();
+  renameInputEl?.select();
+}
+
+async function commitRenameGroup(g: Group) {
+  if (renamingGroupId.value !== g.id) return;
+  const nextName = renameDraft.value.trim();
+  renamingGroupId.value = null;
+  if (nextName && nextName !== g.name) {
+    await saveGroup({ ...g, name: nextName });
+  }
+}
+
+function cancelRenameGroup() {
+  renamingGroupId.value = null;
+}
+
+function moveGroup(g: Group, dir: -1 | 1) {
+  const list = groupList.value;
+  const idx = list.findIndex((x) => x.id === g.id);
+  const other = list[idx + dir];
+  if (!other) return;
+  const nextOrder = other.order === g.order ? g.order + dir : other.order;
+  void put('groups', {
+    [g.id]: { ...g, order: nextOrder },
+    [other.id]: { ...other, order: g.order },
+  });
+}
+
+async function handleDeleteGroup(g: Group) {
+  const res = await confirm({
+    title: `删除分组“${g.name}”？`,
+    content: '该分组下的任务不会被删除，将自动归为“未分组”。',
+    primaryText: '删除分组',
+    danger: true,
+  });
+  if (res !== 'primary') return;
+  await deleteGroup(g.id);
+  notify(`已删除分组“${g.name}”`, true);
+}
+
+function openGroupMenu(g: Group, e: MouseEvent) {
+  const list = groupList.value;
+  const idx = list.findIndex((x) => x.id === g.id);
+  const resetPreview = () => {
+    if (preview.value?.groupId === g.id) preview.value = null;
+  };
+  const { iconItems, colorItems } = buildGroupCustomizeChildren(g, {
+    onPreviewIcon: (iconKey) => {
+      preview.value = { groupId: g.id, icon: iconKey, iconOverride: true };
+    },
+    onPreviewColor: (colorKey) => {
+      preview.value = { groupId: g.id, color: colorKey };
+    },
+    onResetPreview: resetPreview,
+  });
+
+  const items: MenuItem[] = [
+    { key: 'open', label: '打开分组空间', onHover: resetPreview, action: () => emit('openAreaSub', g.id, 'tasks') },
+    { key: 'new-task', label: '新建任务到此分组', onHover: resetPreview, action: () => emit('newTask', g.id) },
+    {
+      key: 'copy-name',
+      label: '复制名称',
+      onHover: resetPreview,
+      action: () => {
+        void navigator.clipboard?.writeText(g.name);
+        notify(`已复制“${g.name}”`);
+      },
+    },
+    { key: 'rename', label: '重命名', onHover: resetPreview, action: () => void startRenameGroup(g) },
+    { separator: true },
+    {
+      key: 'divider',
+      label: g.dividerAfter ? '移除分隔线' : '添加分隔线',
+      onHover: resetPreview,
+      action: () => void saveGroup({ ...g, dividerAfter: !g.dividerAfter || undefined }),
+    },
+    {
+      key: 'icon-sub',
+      label: '分组图标…',
+      children: iconItems,
+    },
+    {
+      key: 'color-sub',
+      label: '分组颜色…',
+      children: colorItems,
+    },
+    {
+      key: 'up',
+      label: '上移一层',
+      disabled: idx <= 0,
+      onHover: resetPreview,
+      action: () => moveGroup(g, -1),
+    },
+    {
+      key: 'down',
+      label: '下移一层',
+      disabled: idx === -1 || idx >= list.length - 1,
+      onHover: resetPreview,
+      action: () => moveGroup(g, 1),
+    },
+    { separator: true },
+    {
+      key: 'delete',
+      label: '删除分组',
+      danger: true,
+      onHover: resetPreview,
+      action: () => void handleDeleteGroup(g),
+    },
+  ];
+  void showMenu(items, { x: e.clientX, y: e.clientY }, { placement: 'right-start', onClose: resetPreview });
+}
+
+function onStarHover(t: Task, e: PointerEvent) {
+  showTaskPreview(t, e.currentTarget as HTMLElement);
+}
+
+function onStarClick(t: Task) {
+  cancelTaskPreview();
+  emit('openTask', t.id);
+}
+
+function openStarMenu(t: Task, e: MouseEvent) {
+  cancelTaskPreview();
+  void openTaskContextMenu(t, { x: e.clientX, y: e.clientY }, { onOpen: () => emit('openTask', t.id) });
+}
+
+function unstarTask(t: Task) {
+  cancelTaskPreview();
+  void saveTask({ ...t, starred: undefined });
+}
+
+const helpOpen = ref(false);
+const helpBtnRef = ref<HTMLElement>();
+const helpPopRef = ref<HTMLElement>();
+const helpPos = ref({ left: 12, top: 200 });
+
+async function toggleHelpPop() {
+  if (helpOpen.value) {
+    helpOpen.value = false;
+    return;
+  }
+  helpOpen.value = true;
+  await nextTick();
+  const btn = helpBtnRef.value;
+  if (!btn) return;
+  const r = btn.getBoundingClientRect();
+  const popEl = helpPopRef.value;
+  const w = popEl?.offsetWidth || 276;
+  const h = popEl?.offsetHeight || 272;
+  const p = place({ left: r.left, top: r.top, width: r.width, height: r.height }, w, h, 'top-start', 8);
+  helpPos.value = { left: p.left, top: p.top };
+}
+
+function onHelpPointerDown(e: PointerEvent) {
+  if (!helpOpen.value) return;
+  const target = e.target as Node | null;
+  if (!target) return;
+  if (helpPopRef.value?.contains(target) || helpBtnRef.value?.contains(target)) return;
+  helpOpen.value = false;
+}
+
+function onHelpKeyDown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && helpOpen.value) {
+    e.preventDefault();
+    e.stopPropagation();
+    helpOpen.value = false;
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('pointerdown', onHelpPointerDown, true);
+  window.addEventListener('keydown', onHelpKeyDown, true);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener('pointerdown', onHelpPointerDown, true);
+  window.removeEventListener('keydown', onHelpKeyDown, true);
+});
+
+const SHORTCUT_TIPS: { keys: string; desc: string }[] = [
+  { keys: '拖动侧栏边缘', desc: '自由调宽 / 左拉收起 / 双击还原' },
+  { keys: 'Ctrl+K', desc: '全局搜索与跳转' },
+  { keys: 'Ctrl+N', desc: '快速新建任务' },
+  { keys: 'Ctrl+F', desc: '定位筛选输入框' },
+  { keys: 'Ctrl+B', desc: '展开 / 收起侧栏' },
+  { keys: 'Alt+←/→', desc: '历史页面前进与后退' },
+  { keys: 'Shift+点击状态', desc: '一键标为已完成 / 恢复' },
+  { keys: '拖拽任务行', desc: '在状态组间快捷流转' },
+  { keys: '右键分组', desc: '更换图标、色彩与分隔线' },
+];
+
+watch(
+  () => props.open,
+  (isOpen) => {
+    if (!isOpen) {
+      helpOpen.value = false;
+      cancelTaskPreview();
+    }
+  },
+);
 </script>
 
 <template>
-  <aside class="ws-sidebar" :class="{ closed: !open }" aria-label="工作台导航">
+  <aside class="ws-sidebar" aria-label="工作台导航">
     <div class="ws-sidebar-inner">
+      <!-- Tegon Top Workspace Header -->
       <div class="sb-header">
-        <div class="sb-brand">
-          <span class="sb-logo" aria-hidden="true">
-            <svg viewBox="0 0 18 18" width="16" height="16">
-              <rect x="2.2" y="2.2" width="13.6" height="13.6" rx="4" fill="currentColor" />
-              <path d="M6 7h6M6 10.5h4" stroke="#FAF9F6" stroke-width="1.6" stroke-linecap="round" />
-            </svg>
-          </span>
+        <button type="button" class="sb-ws-btn" @click="openWorkspaceMenu">
+          <GroupSquircle name="FC" color-key="gray" :size="20" />
           <span class="sb-brand-name">FluentCal</span>
-        </div>
+          <FIcon name="chevronDown" :size="9" class="sb-brand-chev" />
+        </button>
+
         <button
           type="button"
-          class="ws-icon-circle"
+          class="sb-col-btn"
           title="收起侧边栏 (Ctrl+B)"
           aria-label="收起侧边栏"
           @click="emit('toggle')"
@@ -123,39 +396,79 @@ async function submitNewGroup() {
         </button>
       </div>
 
-      <div class="sb-cta-wrap">
-        <button type="button" class="ws-cta-btn sb-cta" @click="emit('newTask')">
-          <FIcon name="add" :size="13" />
-          <span>新建任务</span>
-        </button>
-      </div>
-
       <div class="sb-scroll">
+        <!-- Tactile Stone-Pill Primary Nav -->
         <nav class="sb-nav" aria-label="主要视图">
           <button
             v-for="item in navItems"
             :key="item.kind"
             type="button"
-            class="sb-nav-item"
+            class="stone-pill"
             :class="{ active: activeKind === item.kind }"
             @click="emit('navigate', item.kind)"
           >
-            <FIcon class="sb-nav-icon" :name="item.icon" :size="14" />
-            <span class="sb-nav-label">{{ item.label }}</span>
-            <span v-if="item.count > 0" class="sb-badge">{{ item.count }}</span>
+            <FIcon class="sp-ico" :name="item.icon" :size="13" />
+            <span class="sp-lbl">{{ item.label }}</span>
+            <span v-if="item.count > 0" class="sp-cnt">{{ item.count }}</span>
           </button>
         </nav>
 
+        <!-- Starred Pinned Tasks (with Hover Preview Card) -->
         <section class="sb-section">
           <div class="sb-sec-head">
             <button
               type="button"
               class="sb-sec-toggle"
-              :aria-expanded="areasExpanded"
-              @click="areasExpanded = !areasExpanded"
+              :aria-expanded="starredExpanded"
+              @click="starredExpanded = !starredExpanded"
             >
-              <FIcon class="sb-chev" :class="{ open: areasExpanded }" name="chevronRight" :size="10" />
-              <span>分组</span>
+              <span>星标置顶</span>
+              <FIcon class="sb-chev" :class="{ open: starredExpanded }" name="chevronDown" :size="9" />
+            </button>
+          </div>
+          <div class="sb-accordion" :class="{ open: starredExpanded }">
+            <div class="sb-accordion-body sb-star-list">
+              <div
+                v-for="t in starredTasks"
+                :key="t.id"
+                role="button"
+                tabindex="0"
+                class="star-pill"
+                @pointerenter="onStarHover(t, $event)"
+                @pointerleave="hideTaskPreview"
+                @click="onStarClick(t)"
+                @keydown.enter.space.prevent="onStarClick(t)"
+                @contextmenu.prevent="openStarMenu(t, $event)"
+              >
+                <StatusGlyph :status="effectiveWorkspaceStatus(t)" :size="14" />
+                <span class="star-title">{{ t.title }}</span>
+                <button
+                  type="button"
+                  class="star-unpin"
+                  title="取消星标置顶"
+                  aria-label="取消星标置顶"
+                  @pointerenter.stop
+                  @click.stop="unstarTask(t)"
+                >
+                  <FIcon name="close" :size="9" />
+                </button>
+              </div>
+              <div v-if="!starredTasks.length" class="sb-empty">右键任务即可加入星标</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Teams / Groups Expandable Tree + Dividers -->
+        <section class="sb-section">
+          <div class="sb-sec-head">
+            <button
+              type="button"
+              class="sb-sec-toggle"
+              :aria-expanded="groupsExpanded"
+              @click="groupsExpanded = !groupsExpanded"
+            >
+              <span>分组空间</span>
+              <FIcon class="sb-chev" :class="{ open: groupsExpanded }" name="chevronDown" :size="9" />
             </button>
             <button
               type="button"
@@ -167,8 +480,9 @@ async function submitNewGroup() {
               <FIcon name="add" :size="11" />
             </button>
           </div>
-          <div class="sb-accordion" :class="{ open: areasExpanded }">
-            <div class="sb-accordion-body">
+
+          <div class="sb-accordion" :class="{ open: groupsExpanded }">
+            <div class="sb-accordion-body sb-groups-tree">
               <div v-if="addingGroup" class="sb-group-form">
                 <input
                   ref="groupInputRef"
@@ -177,82 +491,145 @@ async function submitNewGroup() {
                   class="sb-group-input"
                   placeholder="输入分组名称…"
                   @keydown.enter.prevent="submitNewGroup"
-                  @keydown.esc.stop="addingGroup = false"
+                  @keydown.esc.stop="cancelNewGroup"
                   @blur="submitNewGroup"
                 />
               </div>
-              <button
-                v-for="g in groupList"
-                :key="g.id"
-                type="button"
-                class="sb-nav-item sub"
-                :class="{ active: activeKind === 'area' && activeGroupId === g.id }"
-                @click="emit('navigate', 'area', g.id)"
-              >
-                <span class="sb-dot" :style="{ background: groupHex(g.color) }" />
-                <span class="sb-nav-label">{{ g.name }}</span>
-                <span v-if="groupOpenCounts.get(g.id)" class="sb-badge muted">{{ groupOpenCounts.get(g.id) }}</span>
-              </button>
-              <div v-if="!groupList.length && !addingGroup" class="sb-empty">暂无分组，点击右上 + 新建</div>
-            </div>
-          </div>
-        </section>
 
-        <section class="sb-section">
-          <div class="sb-sec-head">
-            <button
-              type="button"
-              class="sb-sec-toggle"
-              :aria-expanded="recentExpanded"
-              @click="recentExpanded = !recentExpanded"
-            >
-              <FIcon class="sb-chev" :class="{ open: recentExpanded }" name="chevronRight" :size="10" />
-              <span>近期动态</span>
-            </button>
-          </div>
-          <div class="sb-accordion" :class="{ open: recentExpanded }">
-            <div class="sb-accordion-body">
-              <button
-                v-for="t in recentTasks"
-                :key="t.id"
-                type="button"
-                class="sb-nav-item sub recent"
-                @click="emit('openTask', t.id)"
-              >
-                <span class="sb-dot small" :style="{ background: dotColor(t.id) }" />
-                <span class="sb-nav-label" :class="{ done: t.done }">{{ t.title }}</span>
-                <span class="sb-rel-time">{{ relativeTimeLabel(t.updatedAt || t.createdAt, Date.now()) }}</span>
-              </button>
-              <div v-if="!recentTasks.length" class="sb-empty">暂无任务记录</div>
+              <template v-for="g in groupList" :key="g.id">
+                <div v-if="renamingGroupId === g.id" class="sb-group-form">
+                  <input
+                    :ref="setRenameInput"
+                    v-model="renameDraft"
+                    type="text"
+                    class="sb-group-input"
+                    @keydown.enter.prevent="commitRenameGroup(g)"
+                    @keydown.esc.stop="cancelRenameGroup"
+                    @blur="commitRenameGroup(g)"
+                  />
+                </div>
+                <div v-else class="sb-group-node">
+                  <button
+                    type="button"
+                    class="sb-group-btn"
+                    :class="{ active: activeKind === 'area' && activeGroupId === g.id }"
+                    @click="toggleGroupTree(g)"
+                    @contextmenu.prevent="openGroupMenu(g, $event)"
+                  >
+                    <GroupSquircle
+                      :name="g.name"
+                      :color-key="displayGroupColorKey(g)"
+                      :icon="displayGroupIcon(g)"
+                      :size="18"
+                    />
+                    <span class="sb-group-name">{{ g.name }}</span>
+                    <FIcon
+                      class="sb-g-chev"
+                      :class="{ open: isGroupExpanded(g.id) }"
+                      name="chevronDown"
+                      :size="9"
+                    />
+                  </button>
+
+                  <div v-if="isGroupExpanded(g.id)" class="sb-group-subs">
+                    <button
+                      type="button"
+                      class="stone-pill sub"
+                      :class="{ active: activeKind === 'area' && activeGroupId === g.id && areaSubTab === 'tasks' }"
+                      @click="emit('openAreaSub', g.id, 'tasks')"
+                    >
+                      <FIcon name="checklist" :size="12" class="sp-ico" />
+                      <span class="sp-lbl">待办</span>
+                      <span v-if="groupOpenCounts.get(g.id)" class="sp-cnt">{{ groupOpenCounts.get(g.id) }}</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="stone-pill sub"
+                      :class="{ active: activeKind === 'area' && activeGroupId === g.id && areaSubTab === 'overview' }"
+                      @click="emit('openAreaSub', g.id, 'overview')"
+                    >
+                      <FIcon name="layers" :size="12" class="sp-ico" />
+                      <span class="sp-lbl">概览</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="stone-pill sub"
+                      :class="{ active: activeKind === 'area' && activeGroupId === g.id && areaSubTab === 'calendar' }"
+                      @click="emit('openAreaSub', g.id, 'calendar')"
+                    >
+                      <FIcon name="calendar" :size="12" class="sp-ico" />
+                      <span class="sp-lbl">日历</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="stone-pill sub"
+                      :class="{ active: activeKind === 'area' && activeGroupId === g.id && areaSubTab === 'resources' }"
+                      @click="emit('openAreaSub', g.id, 'resources')"
+                    >
+                      <FIcon name="folder" :size="12" class="sp-ico" />
+                      <span class="sp-lbl">资料</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div v-if="g.dividerAfter" class="sb-group-divider" role="separator" />
+              </template>
+
+              <div v-if="!groupList.length && !addingGroup" class="sb-empty">暂无分组，点击右上 + 新建</div>
             </div>
           </div>
         </section>
       </div>
 
-      <footer class="sb-footer">
-        <button
-          type="button"
-          class="sb-foot-btn"
-          :class="{ active: activeKind === 'settings' }"
-          @click="emit('openSettings')"
-        >
-          <FIcon name="settings" :size="13" />
-          <span>设置</span>
-        </button>
-        <div class="sb-foot-actions">
+      <!-- 1:1 Bottom 3-Slot Floating Utility Dock -->
+      <footer class="sb-dock">
+        <div class="sb-dock-left">
+          <button
+            ref="helpBtnRef"
+            type="button"
+            class="dock-ico"
+            :class="{ active: helpOpen }"
+            title="快捷键与操作指南"
+            aria-label="快捷键与操作指南"
+            @click="toggleHelpPop"
+          >
+            <FIcon name="help" :size="13" />
+          </button>
+          <button
+            type="button"
+            class="dock-ico"
+            :class="{ active: activeKind === 'settings' }"
+            title="偏好设置 (Ctrl+,)"
+            aria-label="偏好设置"
+            @click="emit('openSettings')"
+          >
+            <FIcon name="settings" :size="14" />
+          </button>
+          <button
+            type="button"
+            class="dock-ico"
+            :title="wsTheme === 'dark' ? '切换浅色模式' : '切换深曜石暗色'"
+            :aria-label="wsTheme === 'dark' ? '切换浅色模式' : '切换深曜石暗色'"
+            @click="emit('toggleTheme')"
+          >
+            <Transition name="ws-icon-swap" mode="out-in">
+              <FIcon :key="wsTheme" :name="wsTheme === 'dark' ? 'sun' : 'moon'" :size="14" />
+            </Transition>
+          </button>
           <button
             v-if="syncStatus.enabled"
             type="button"
-            class="ws-icon-circle"
+            class="dock-ico"
             :class="{ spinning: syncStatus.syncing }"
-            :title="`${statusLine(syncStatus)}（点击立即同步）`"
+            :title="`${statusLine(syncStatus)}（点击同步）`"
             @click="syncNow()"
           >
             <FIcon :name="syncStatus.error ? 'warning' : 'sync'" :size="13" />
           </button>
           <button
+            v-if="isTauri"
             type="button"
-            class="ws-icon-circle"
+            class="dock-ico"
             title="呼出桌面贴片日历"
             aria-label="呼出桌面贴片日历"
             @click="emit('summonDesk')"
@@ -260,80 +637,128 @@ async function submitNewGroup() {
             <FIcon name="pin" :size="13" />
           </button>
         </div>
+
+        <button
+          type="button"
+          class="dock-add-btn"
+          title="快速新建任务 (Ctrl+N)"
+          aria-label="快速新建任务"
+          @click="emit('newTask')"
+        >
+          <FIcon name="add" :size="14" />
+        </button>
+
+        <button
+          type="button"
+          class="dock-ico"
+          title="搜索与命令跳转 (Ctrl+K)"
+          aria-label="搜索与命令跳转"
+          @click="emit('quickSearch')"
+        >
+          <FIcon name="search" :size="14" />
+        </button>
       </footer>
     </div>
+
+    <Teleport to="body">
+      <Transition name="sb-help-tr">
+        <div
+          v-if="helpOpen"
+          ref="helpPopRef"
+          class="sb-help-pop"
+          :style="{ left: `${helpPos.left}px`, top: `${helpPos.top}px` }"
+          role="dialog"
+          aria-label="快捷键与工作台指南"
+        >
+          <div class="shp-head">快捷键与操作指南</div>
+          <div class="shp-list">
+            <div v-for="tip in SHORTCUT_TIPS" :key="tip.keys" class="shp-row">
+              <span class="shp-desc">{{ tip.desc }}</span>
+              <kbd class="shp-kbd">{{ tip.keys }}</kbd>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
   </aside>
 </template>
 
 <style scoped>
 .ws-sidebar {
-  width: 236px;
-  flex: none;
+  width: 100%;
+  height: 100%;
   background: var(--ws-sidebar-bg);
-  border-right: 1px solid var(--ws-hairline);
   overflow: hidden;
-  transition: width 240ms var(--ws-ease-out), border-color 180ms ease;
-}
-
-.ws-sidebar.closed {
-  width: 0;
-  border-right-color: transparent;
 }
 
 .ws-sidebar-inner {
-  width: 236px;
+  width: 100%;
   height: 100%;
   display: flex;
   flex-direction: column;
-  padding: 12px 10px 10px;
+  padding: 10px 8px 10px 10px;
   box-sizing: border-box;
-  transition: opacity 180ms ease, transform 240ms var(--ws-ease-out);
-}
-
-.ws-sidebar.closed .ws-sidebar-inner {
-  opacity: 0;
-  transform: translateX(-14px);
-  pointer-events: none;
 }
 
 .sb-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 2px 4px 10px;
+  gap: 6px;
+  padding: 0 2px 10px;
 }
 
-.sb-brand {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding-left: 4px;
-}
-
-.sb-logo {
+.sb-ws-btn {
+  min-width: 0;
+  max-width: calc(100% - 30px);
+  border: 0;
+  background: transparent;
+  padding: 4px 7px 4px 4px;
+  border-radius: 9px;
   display: inline-flex;
   align-items: center;
-  justify-content: center;
+  gap: 7px;
+  font: inherit;
   color: var(--ws-ink);
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.sb-ws-btn:hover {
+  background: var(--ws-stone-pill);
 }
 
 .sb-brand-name {
   font-family: var(--font-display);
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 700;
   letter-spacing: -0.02em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sb-brand-chev {
+  color: var(--ws-ink-muted);
+}
+
+.sb-col-btn {
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ws-ink-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.sb-col-btn:hover {
+  background: var(--ws-stone-pill);
   color: var(--ws-ink);
-}
-
-.sb-cta-wrap {
-  padding: 0 2px 12px;
-}
-
-.sb-cta {
-  width: 100%;
-  height: 36px;
-  border-radius: 12px;
-  font-size: 13px;
 }
 
 .sb-scroll {
@@ -343,96 +768,88 @@ async function submitNewGroup() {
   padding-right: 2px;
 }
 
+/* Tactile Stone Pills (compact width: fit-content, floating pure white when active) */
 .sb-nav {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  align-items: flex-start;
+  gap: 4px;
 }
 
-.sb-nav-item {
-  width: 100%;
-  height: 32px;
-  padding: 0 10px;
+.stone-pill {
+  height: 27px;
+  max-width: 100%;
+  padding: 0 10px 0 8px;
   border: 0;
-  border-radius: 9px;
-  background: transparent;
+  border-radius: 8px;
+  background: var(--ws-stone-pill);
   color: var(--ws-ink-secondary);
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 9px;
+  gap: 7px;
   font: inherit;
-  font-size: 13px;
-  font-weight: 500;
-  text-align: left;
+  font-size: 12.5px;
+  font-weight: 550;
   cursor: pointer;
-  transition: background-color 130ms ease, color 130ms ease, transform 120ms var(--ws-ease-out);
+  transition:
+    background-color 130ms ease,
+    color 130ms ease,
+    box-shadow 140ms ease,
+    transform 110ms var(--ws-ease-out);
 }
 
-.sb-nav-item:hover {
-  background: var(--ws-pill-bg);
+.stone-pill:hover:not(.active) {
+  background: var(--ws-stone-pill-hover);
   color: var(--ws-ink);
 }
 
-.sb-nav-item:active {
-  transform: scale(0.985);
+.stone-pill:active {
+  transform: scale(0.98);
 }
 
-.sb-nav-item.active {
+.stone-pill.active {
   background: var(--ws-card-bg);
   color: var(--ws-ink);
   font-weight: 600;
   box-shadow: var(--ws-shadow-sm);
 }
 
-.sb-nav-icon {
-  flex: none;
-  opacity: 0.78;
+.stone-pill.sub {
+  height: 25px;
+  font-size: 12px;
 }
 
-.sb-nav-item.active .sb-nav-icon {
+.sp-ico {
+  opacity: 0.78;
+  flex: none;
+}
+
+.stone-pill.active .sp-ico {
   opacity: 1;
 }
 
-.sb-nav-label {
-  flex: 1;
-  min-width: 0;
+.sp-lbl {
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-.sb-nav-label.done {
-  text-decoration: line-through;
-  opacity: 0.52;
-}
-
-.sb-badge {
-  flex: none;
-  font-size: 11px;
+.sp-cnt {
+  font-size: 10.5px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-  color: var(--ws-ink-secondary);
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: rgba(28, 25, 23, 0.055);
-}
-
-.sb-badge.muted {
-  background: transparent;
-  padding: 0 2px;
   color: var(--ws-ink-muted);
-  font-weight: 500;
 }
 
 .sb-section {
-  margin-top: 14px;
+  margin-top: 15px;
 }
 
 .sb-sec-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 6px 4px;
+  padding: 0 2px 5px;
 }
 
 .sb-sec-toggle {
@@ -446,21 +863,21 @@ async function submitNewGroup() {
   font: inherit;
   font-size: 11.5px;
   font-weight: 600;
-  color: var(--ws-ink-muted);
+  color: var(--ws-ink-secondary);
   cursor: pointer;
-  transition: color 130ms ease;
 }
 
 .sb-sec-toggle:hover {
-  color: var(--ws-ink-secondary);
+  color: var(--ws-ink);
 }
 
 .sb-chev {
-  transition: transform 200ms var(--ws-ease-out);
+  transition: transform 180ms var(--ws-ease-out);
+  transform: rotate(-90deg);
 }
 
 .sb-chev.open {
-  transform: rotate(90deg);
+  transform: rotate(0deg);
 }
 
 .sb-sec-add {
@@ -474,19 +891,18 @@ async function submitNewGroup() {
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: background-color 130ms ease, color 130ms ease;
 }
 
 .sb-sec-add:hover {
-  background: var(--ws-pill-bg);
+  background: var(--ws-stone-pill);
   color: var(--ws-ink);
 }
 
 .sb-accordion {
   display: grid;
   grid-template-rows: 0fr;
-  transition: grid-template-rows 220ms var(--ws-ease-out), opacity 180ms ease;
   opacity: 0;
+  transition: grid-template-rows 210ms var(--ws-ease-out), opacity 160ms ease;
 }
 
 .sb-accordion.open {
@@ -498,35 +914,141 @@ async function submitNewGroup() {
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  gap: 1px;
 }
 
-.sb-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex: none;
+/* Starred Pills */
+.sb-star-list {
+  gap: 4px;
 }
 
-.sb-dot.small {
-  width: 6px;
-  height: 6px;
+.star-pill {
+  width: 100%;
+  height: 28px;
+  padding: 0 6px 0 9px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--ws-stone-pill);
+  color: var(--ws-ink);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  box-sizing: border-box;
+  transition: background-color 120ms ease;
 }
 
-.sb-nav-item.recent {
-  height: 29px;
-  font-size: 12.5px;
+.star-pill:hover {
+  background: var(--ws-stone-pill-hover);
 }
 
-.sb-rel-time {
-  flex: none;
-  font-size: 11px;
+.star-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.star-unpin {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
   color: var(--ws-ink-muted);
-  font-variant-numeric: tabular-nums;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  cursor: pointer;
+  flex: none;
+  transition: opacity 110ms ease, background-color 110ms ease, color 110ms ease;
+}
+
+.star-pill:hover .star-unpin,
+.star-unpin:focus-visible {
+  opacity: 1;
+}
+
+.star-unpin:hover {
+  background: var(--ws-pill-bg);
+  color: var(--ws-ink);
+}
+
+/* Expandable Groups Tree */
+.sb-groups-tree {
+  gap: 3px;
+}
+
+.sb-group-node {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.sb-group-btn {
+  width: 100%;
+  height: 28px;
+  padding: 0 6px 0 4px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ws-ink);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.sb-group-btn:hover {
+  background: var(--ws-stone-pill);
+}
+
+.sb-group-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sb-g-chev {
+  color: var(--ws-ink-muted);
+  transition: transform 160ms var(--ws-ease-out);
+  transform: rotate(-90deg);
+}
+
+.sb-g-chev.open {
+  transform: rotate(0deg);
+}
+
+.sb-group-subs {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding-left: 16px;
+  padding-bottom: 3px;
+}
+
+.sb-group-divider {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--ws-hairline);
 }
 
 .sb-group-form {
-  padding: 2px 6px 4px;
+  padding: 2px 4px 4px;
 }
 
 .sb-group-input {
@@ -539,51 +1061,73 @@ async function submitNewGroup() {
   color: var(--ws-ink);
   font-size: 12.5px;
   box-sizing: border-box;
+  outline: none;
 }
 
 .sb-empty {
-  padding: 6px 10px;
+  padding: 4px 6px;
   font-size: 11.5px;
   color: var(--ws-ink-muted);
 }
 
-.sb-footer {
+/* Bottom 3-Slot Floating Utility Dock */
+.sb-dock {
   flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding-top: 8px;
-  margin-top: 6px;
-  border-top: 1px solid var(--ws-hairline);
+  gap: 4px;
+  padding: 8px 2px 2px;
+  margin-top: 4px;
 }
 
-.sb-foot-btn {
-  height: 30px;
-  padding: 0 10px;
+.sb-dock-left {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.dock-ico {
+  width: 24px;
+  height: 24px;
   border: 0;
-  border-radius: 8px;
+  border-radius: 7px;
   background: transparent;
   color: var(--ws-ink-secondary);
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  font: inherit;
-  font-size: 12.5px;
-  font-weight: 500;
+  justify-content: center;
   cursor: pointer;
-  transition: background-color 130ms ease, color 130ms ease;
+  transition: background-color 120ms ease, color 120ms ease;
 }
 
-.sb-foot-btn:hover,
-.sb-foot-btn.active {
-  background: var(--ws-pill-bg);
+.dock-ico:hover,
+.dock-ico.active {
+  background: var(--ws-stone-pill);
   color: var(--ws-ink);
 }
 
-.sb-foot-actions {
-  display: flex;
+.dock-add-btn {
+  width: 30px;
+  height: 26px;
+  border: 1px solid var(--ws-hairline);
+  border-radius: 9px;
+  background: var(--ws-card-bg);
+  color: var(--ws-ink);
+  display: inline-flex;
   align-items: center;
-  gap: 2px;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: var(--ws-shadow-sm);
+  transition: transform 120ms var(--ws-ease-out), border-color 130ms ease;
+}
+
+.dock-add-btn:hover {
+  border-color: var(--ws-hairline-strong);
+}
+
+.dock-add-btn:active {
+  transform: scale(0.95);
 }
 
 .spinning :deep(.f-icon) {
@@ -594,5 +1138,71 @@ async function submitNewGroup() {
   to {
     transform: rotate(360deg);
   }
+}
+
+.sb-help-pop {
+  position: fixed;
+  z-index: 95;
+  width: 276px;
+  padding: 10px;
+  border-radius: 13px;
+  background: var(--ws-card-bg, #ffffff);
+  border: 1px solid var(--ws-hairline-strong, rgba(28, 25, 23, 0.14));
+  box-shadow: var(--ws-shadow-float);
+  color: var(--ws-ink);
+  font-family: var(--font-ui);
+}
+
+.shp-head {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--ws-ink-secondary);
+  padding: 2px 4px 8px;
+  border-bottom: 1px solid var(--ws-hairline);
+  margin-bottom: 6px;
+}
+
+.shp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.shp-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 4px;
+  font-size: 12px;
+}
+
+.shp-desc {
+  color: var(--ws-ink);
+}
+
+.shp-kbd {
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--ws-card-subtle);
+  border: 1px solid var(--ws-hairline);
+  color: var(--ws-ink-secondary);
+  flex: none;
+}
+
+.sb-help-tr-enter-active {
+  transition: opacity 140ms var(--ws-ease-out), transform 150ms var(--ws-ease-out);
+}
+
+.sb-help-tr-leave-active {
+  transition: opacity 90ms ease;
+}
+
+.sb-help-tr-enter-from,
+.sb-help-tr-leave-to {
+  opacity: 0;
+  transform: translateY(4px) scale(0.97);
 }
 </style>

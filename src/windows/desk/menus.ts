@@ -1,11 +1,22 @@
-import { showMenu, TASK_COLORS, type MenuItem } from '@/fluent';
-import type { ISODate, PinMode, Task, ThemeMode } from '@/types';
+import { showMenu, TASK_COLORS, taskColor, type MenuItem } from '@/fluent';
+import type { ISODate, PinMode, Task, TaskStatus, ThemeMode } from '@/types';
 import { call, screenTitle, type Screen } from '@/api';
 import { syncNow, syncStatus } from '@/composables/sync';
-import { doc, patchSettings, storeState } from '@/stores/doc';
+import { isDark } from '@/composables/theme';
+import { doc, groupList, patchSettings, storeState } from '@/stores/doc';
 import { addDays } from '@/lib/date';
+import { getGroupIcon } from '@/lib/groupIcons';
 import type { Occurrence } from '@/lib/recur';
 import { inGantt } from '@/lib/gantt';
+import {
+  applyTaskStatus,
+  effectivePriority,
+  effectiveWorkspaceStatus,
+  PRIORITY_META,
+  PRIORITY_ORDER,
+  STATUS_META,
+  WORKSPACE_STATUS_ORDER,
+} from '@/lib/taskMeta';
 import {
   type DeleteMode,
   deleteOccurrence,
@@ -34,9 +45,53 @@ export async function removeTask(t: Task, date?: ISODate, mode: DeleteMode = 'al
   notify(`已删除“${t.title.length > 16 ? `${t.title.slice(0, 16)}…` : t.title}”`, true);
 }
 
+const STATUS_DOT: Record<TaskStatus, string> = {
+  in_review: '#0284C7',
+  in_progress: '#D97706',
+  todo: '#9E9990',
+  backlog: '#8B7D3B',
+  done: '#107C10',
+};
+
 export function chipMenu(occ: Occurrence, at: At): Promise<void> {
   if (storeState.readOnly) return Promise.resolve(); // web view: every item edits
   const t = occ.task;
+  const st = effectiveWorkspaceStatus(t);
+  const statusItems: MenuItem[] = WORKSPACE_STATUS_ORDER.map((s) => ({
+    label: STATUS_META[s].label,
+    colorDot: STATUS_DOT[s],
+    radio: true,
+    checked: st === s,
+    action: () => void saveTask(applyTaskStatus(t, s)),
+  }));
+  const prio = effectivePriority(t);
+  const priorityItems: MenuItem[] = PRIORITY_ORDER.map((p) => ({
+    label: PRIORITY_META[p].label,
+    colorDot: PRIORITY_META[p].color,
+    radio: true,
+    checked: prio === p,
+    action: () => void saveTask({ ...t, priority: p === 'none' ? undefined : p }),
+  }));
+  const groupItems: MenuItem[] = [
+    {
+      label: '无分组',
+      colorDot: '#9E9990',
+      radio: true,
+      checked: !t.groupId,
+      action: () => void saveTask({ ...t, groupId: undefined }),
+    },
+    ...groupList.value.map((g) => {
+      const def = getGroupIcon(g.icon);
+      return {
+        label: g.name,
+        svgPaths: def?.paths,
+        colorDot: def ? undefined : taskColor(g.color, isDark.value).bar,
+        radio: true,
+        checked: t.groupId === g.id,
+        action: () => void saveTask({ ...t, groupId: g.id }),
+      };
+    }),
+  ];
   const items: (MenuItem | false)[] = [
     {
       label: occ.done ? '标记为未完成' : '标记为完成',
@@ -47,6 +102,10 @@ export function chipMenu(occ: Occurrence, at: At): Promise<void> {
     { swatches: colorSwatches(t.color), onSwatch: (k) => void setColor(t, k) },
     { separator: true },
     { label: '编辑…', icon: 'edit', shortcut: 'Enter', action: () => openEditor({ mode: 'edit', taskId: t.id, date: occ.date }) },
+    !t.repeat && { label: '切换状态', icon: 'sliders', children: statusItems },
+    { label: '优先级…', icon: 'tag', children: priorityItems },
+    { label: t.starred ? '取消星标置顶' : '加入星标置顶', icon: t.starred ? 'starFill' : 'star', checked: !!t.starred, action: () => void saveTask({ ...t, starred: !t.starred || undefined }) },
+    { label: '移动到分组…', icon: 'group', children: groupItems },
     { label: '复制一份', icon: 'copy', action: () => void duplicateTask(t) },
     !t.repeat && { label: '推迟一天', icon: 'forward', action: () => void moveTask(t, addDays(t.start, 1)) },
     !t.repeat &&

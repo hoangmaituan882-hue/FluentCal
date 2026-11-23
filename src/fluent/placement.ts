@@ -6,7 +6,7 @@ export type Placement =
   | 'top-start' | 'top-end' | 'top'
   | 'right-start' | 'left-start';
 
-export type Anchor = HTMLElement | DOMRect | { x: number; y: number } | null | undefined;
+export type Anchor = HTMLElement | DOMRect | MouseEvent | { x: number; y: number } | null | undefined;
 
 export interface Rect { left: number; top: number; width: number; height: number }
 
@@ -14,12 +14,20 @@ const MARGIN = 8;
 
 export function anchorRect(a: Anchor): Rect {
   if (!a) return { left: innerWidth / 2, top: innerHeight / 3, width: 0, height: 0 };
-  if (a instanceof HTMLElement) {
+  if (typeof HTMLElement !== 'undefined' && a instanceof HTMLElement) {
     const r = a.getBoundingClientRect();
     return { left: r.left, top: r.top, width: r.width, height: r.height };
   }
-  if ('width' in a) return { left: a.left, top: a.top, width: a.width, height: a.height };
-  return { left: a.x, top: a.y, width: 0, height: 0 };
+  if ('clientX' in a && 'clientY' in a && typeof a.clientX === 'number' && typeof a.clientY === 'number') {
+    return { left: a.clientX, top: a.clientY, width: 0, height: 0 };
+  }
+  if ('left' in a && 'top' in a && 'width' in a && typeof a.left === 'number' && typeof a.top === 'number') {
+    return { left: a.left, top: a.top, width: a.width, height: a.height };
+  }
+  if ('x' in a && 'y' in a && typeof a.x === 'number' && typeof a.y === 'number') {
+    return { left: a.x, top: a.y, width: 0, height: 0 };
+  }
+  return { left: innerWidth / 2, top: innerHeight / 3, width: 0, height: 0 };
 }
 
 export interface Placed { left: number; top: number; side: 'top' | 'bottom' | 'left' | 'right' }

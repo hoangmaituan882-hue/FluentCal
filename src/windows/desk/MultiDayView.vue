@@ -46,8 +46,10 @@ import { saveTask, setOccurrenceDone } from '@/lib/tasks';
 import { doc, patchSettings, storeState } from '@/stores/doc';
 import { isDark } from '@/composables/theme';
 import { now } from '@/composables/now';
+import { effectiveMultiDaySpan, useViewport } from '@/composables/useViewport';
 import { chipMenu, removeTask } from './menus';
-import { goToday, openEditor, page, shownTasks, ui } from './state';
+import { clusterSpotlightStateOf, goToday, openEditor, page, setPendingDraft, shownTasks, spotlightStateOf, ui, updatePendingDraftFromTimeline } from './state';
+import type { SpotlightVisualState } from '@/lib/filter';
 
 const DAYS_KEY = 'fluentcal.multiday.days';
 const HOUR_H_KEY = 'fluentcal.multiday.hourH';
@@ -75,16 +77,19 @@ const initialDays = readNum(DAYS_KEY);
 const daysCount = ref<DesktopMultiDays>(
   DESKTOP_MULTIDAY_STEPS.includes(initialDays as DesktopMultiDays) ? (initialDays as DesktopMultiDays) : 5,
 );
+const phoneDays = ref<2 | 3>(3);
+const { width: vpWidth, isPhone } = useViewport();
+const effectiveDays = computed(() => effectiveMultiDaySpan(daysCount.value, vpWidth.value, phoneDays.value));
 const initialH = readNum(HOUR_H_KEY);
 const hourHeight = ref<number>(
   initialH !== null ? Math.max(MIN_HOUR_H, Math.min(MAX_HOUR_H, initialH)) : DEFAULT_HOUR_H,
 );
 
+watch(daysCount, (v) => writeStr(DAYS_KEY, String(v)));
 watch(
-  daysCount,
+  effectiveDays,
   (v) => {
     ui.multidaySpan = v;
-    writeStr(DAYS_KEY, String(v));
   },
   { immediate: true },
 );
@@ -134,7 +139,7 @@ function accentHexOf(task: Task): string {
 // ---------------------------------------------------------------- Visible Date Range
 
 const visibleDates = computed<ISODate[]>(() =>
-  visibleDatesForSpan(ui.selected, daysCount.value, doc.settings.calendar.weekStart),
+  visibleDatesForSpan(ui.selected, effectiveDays.value, doc.settings.calendar.weekStart),
 );
 
 const rangeSummary = computed(() => {
@@ -270,19 +275,30 @@ interface MultiDayRenderBlock {
   done: boolean;
   occ: Occurrence | null;
   isDraft: boolean;
+  isPendingDraft: boolean;
   isSelected: boolean;
   isMoving: boolean;
   isResizing: boolean;
   showDuration: boolean;
+  spotlight: SpotlightVisualState;
 }
 
 const isClustered = computed(() => hourHeight.value < 42);
+
+function pendingBlockColor(color?: string, groupId?: string): string {
+  const k = color || (groupId ? doc.groups[groupId]?.color : undefined);
+  return k ? taskColor(k, isDark.value).bar : '#ee632c';
+}
 
 const blocksByDate = computed(() => {
   const out = new Map<ISODate, MultiDayRenderBlock[]>();
   const d = drag.value;
   const h = hourHeight.value;
   const clustered = isClustered.value;
+  const isDraftMoveOrResize = Boolean(
+    d && d.key === '__draft__' && (d.kind === 'move' || d.kind === 'resize-top' || d.kind === 'resize-bottom'),
+  );
+  const pending = ui.pendingDraft && (!d || d.kind !== 'create') ? ui.pendingDraft : null;
 
   for (const date of visibleDates.value) {
     const occList = (visibleOccurrences.value.get(date) ?? []).filter((o) => !!o.task.time);
@@ -310,10 +326,14 @@ const blocksByDate = computed(() => {
     }
 
     // If an event from another column is moving INTO this column, inject it here cleanly.
-    const incomingMove = d && d.kind === 'move' && d.targetDate === date && !occByKey.has(d.key);
-    const hasCreateDraft = d && d.kind === 'create' && d.targetDate === date;
+    const incomingMove = Boolean(d && d.kind === 'move' && d.targetDate === date && d.key !== '__draft__' && !occByKey.has(d.key));
+    const hasCreateDraft = Boolean(d && d.kind === 'create' && d.targetDate === date);
+    const hasPendingHere = Boolean(
+      !hasCreateDraft &&
+        ((isDraftMoveOrResize && d?.targetDate === date) || (!isDraftMoveOrResize && pending && pending.date === date)),
+    );
 
-    if (incomingMove) {
+    if (incomingMove && d) {
       inputs.push({
         id: d.key,
         title: d.title,
@@ -324,7 +344,7 @@ const blocksByDate = computed(() => {
         order: 999_998,
       });
     }
-    if (hasCreateDraft) {
+    if (hasCreateDraft && d) {
       inputs.push({
         id: d.key,
         title: d.title,
@@ -334,60 +354,81 @@ const blocksByDate = computed(() => {
         done: false,
         order: 999_999,
       });
+    } else if (hasPendingHere) {
+      const s = isDraftMoveOrResize && d ? d.startMin : pending!.startMin;
+      const e = isDraftMoveOrResize && d ? d.endMin : pending!.endMin;
+      inputs.push({
+        id: '__draft__',
+        title: pending?.title || d?.title || '新建事项',
+        startMin: s,
+        endMin: Math.max(s + MIN_DURATION, e),
+        color: pendingBlockColor(pending?.color, pending?.groupId),
+        done: false,
+        order: 999_999,
+      });
     }
 
-    if (clustered && !d) {
-      const blocks = clusterDayEvents(inputs, h, daysCount.value);
+    if (clustered && !d && !hasPendingHere) {
+      const blocks = clusterDayEvents(inputs, h, effectiveDays.value);
       out.set(
         date,
-        blocks.map((b) =>
-          b.kind === 'cluster'
-            ? {
-                kind: 'cluster',
-                id: b.id,
-                title: `${b.count} 项日程`,
-                startMin: b.startMin,
-                endMin: b.endMin,
-                col: b.col,
-                colCount: b.colCount,
-                color: '#8d8e98',
-                colors: clusterColors(b.items, 3),
-                count: b.count,
-                done: false,
-                occ: null,
-                isDraft: false,
-                isSelected: false,
-                isMoving: false,
-                isResizing: false,
-                showDuration: false,
-              }
-            : {
-                kind: 'single',
-                id: b.id,
-                title: b.item.title,
-                startMin: b.startMin,
-                endMin: b.endMin,
-                col: b.col,
-                colCount: b.colCount,
-                color: b.item.color,
-                colors: [b.item.color],
-                count: 1,
-                done: b.item.done,
-                occ: occByKey.get(b.id) ?? null,
-                isDraft: false,
-                isSelected: selectedKey.value === b.id,
-                isMoving: false,
-                isResizing: false,
-                showDuration: false,
-              },
-        ),
+        blocks.map((b) => {
+          if (b.kind === 'cluster') {
+            const memberTasks = b.items
+              .map((it) => occByKey.get(it.id)?.task)
+              .filter((t): t is Task => !!t);
+            return {
+              kind: 'cluster',
+              id: b.id,
+              title: `${b.count} 项日程`,
+              startMin: b.startMin,
+              endMin: b.endMin,
+              col: b.col,
+              colCount: b.colCount,
+              color: '#8d8e98',
+              colors: clusterColors(b.items, 3),
+              count: b.count,
+              done: false,
+              occ: null,
+              isDraft: false,
+              isPendingDraft: false,
+              isSelected: false,
+              isMoving: false,
+              isResizing: false,
+              showDuration: false,
+              spotlight: clusterSpotlightStateOf(memberTasks),
+            };
+          }
+          const occ = occByKey.get(b.id) ?? null;
+          return {
+            kind: 'single',
+            id: b.id,
+            title: b.item.title,
+            startMin: b.startMin,
+            endMin: b.endMin,
+            col: b.col,
+            colCount: b.colCount,
+            color: b.item.color,
+            colors: [b.item.color],
+            count: 1,
+            done: b.item.done,
+            occ,
+            isDraft: false,
+            isPendingDraft: false,
+            isSelected: selectedKey.value === b.id,
+            isMoving: false,
+            isResizing: false,
+            showDuration: false,
+            spotlight: occ ? spotlightStateOf(occ.task) : 'normal',
+          };
+        }),
       );
       continue;
     }
 
     const laid = layoutDayEvents(
       inputs.map((x) => ({ id: x.id, startMin: x.startMin, endMin: x.endMin, order: x.order })),
-      pinnedRightId.value || undefined,
+      pinnedRightId.value || (hasPendingHere ? '__draft__' : undefined),
     );
     const laidById = new Map<string, DayLayoutItem>(laid.map((x) => [x.id, x]));
 
@@ -395,37 +436,53 @@ const blocksByDate = computed(() => {
     const stableKeys = [...occByKey.keys()].sort((a, b) => a.localeCompare(b));
     if (incomingMove && d) stableKeys.push(d.key);
     if (hasCreateDraft && d) stableKeys.push(d.key);
+    else if (hasPendingHere) stableKeys.push('__draft__');
 
     const colBlocks: MultiDayRenderBlock[] = [];
     for (const id of stableKeys) {
       const l = laidById.get(id);
       if (!l) continue;
       const occ = occByKey.get(id) ?? (d?.key === id ? d.occ : null);
-      const isCreate = Boolean(d?.kind === 'create' && d.key === id);
+      const isCreate = Boolean(hasCreateDraft && d?.key === id);
+      const isPendingDraft = Boolean(hasPendingHere && id === '__draft__');
+      const isDraft = isCreate || isPendingDraft;
       const activeForThis = d?.key === id;
       const isMoving = Boolean(activeForThis && d?.kind === 'move');
       const isResizing = Boolean(activeForThis && (d?.kind === 'resize-top' || d?.kind === 'resize-bottom'));
-      const isSelected = Boolean(isCreate || activeForThis || selectedKey.value === id);
-      const showDuration = Boolean(activeForThis && (d?.kind === 'resize-top' || d?.kind === 'resize-bottom' || d?.kind === 'create'));
+      const isSelected = Boolean(isDraft || activeForThis || selectedKey.value === id);
+      const showDuration = Boolean(
+        isPendingDraft ||
+          (activeForThis && (d?.kind === 'resize-top' || d?.kind === 'resize-bottom' || d?.kind === 'create')),
+      );
 
       colBlocks.push({
         kind: 'single',
         id,
-        title: occ ? occ.task.title : d?.title || '新建事项',
+        title: occ
+          ? occ.task.title
+          : isPendingDraft
+            ? pending?.title || d?.title || '新建事项'
+            : d?.title || '新建事项',
         startMin: l.startMin,
         endMin: l.endMin,
         col: l.col,
         colCount: l.colCount,
-        color: occ ? accentHexOf(occ.task) : '#ee632c',
+        color: occ
+          ? accentHexOf(occ.task)
+          : isPendingDraft
+            ? pendingBlockColor(pending?.color, pending?.groupId)
+            : '#ee632c',
         colors: [],
         count: 1,
         done: occ ? occ.done : false,
         occ,
-        isDraft: isCreate,
+        isDraft,
+        isPendingDraft,
         isSelected,
         isMoving,
         isResizing,
         showDuration,
+        spotlight: occ && !isDraft ? spotlightStateOf(occ.task) : 'normal',
       });
     }
     out.set(date, colBlocks);
@@ -441,7 +498,7 @@ function blockStyle(b: MultiDayRenderBlock): Record<string, string> {
   const h = hourHeight.value;
   const topPx = (b.startMin / 60) * h + 1.5;
   const heightPx = blockPxHeight(b);
-  const gap = daysCount.value >= 6 ? 2 : 4;
+  const gap = effectiveDays.value >= 6 ? 2 : 4;
   const leftExpr =
     b.colCount <= 1 ? 'calc(0% + 2px)' : `calc(${(b.col / b.colCount) * 100}% + ${((b.col * gap) / b.colCount + 2).toFixed(2)}px)`;
   const widthExpr =
@@ -465,7 +522,7 @@ function titleClampClass(b: MultiDayRenderBlock): string {
 }
 
 function showBlockDuration(b: MultiDayRenderBlock): boolean {
-  if (daysCount.value >= 7 && hourHeight.value < 44) return false;
+  if (effectiveDays.value >= 7 && hourHeight.value < 44) return false;
   return blockPxHeight(b) >= 26 && (b.endMin - b.startMin >= 30 || b.showDuration);
 }
 
@@ -521,7 +578,7 @@ function dateAtClientX(clientX: number, fallback: ISODate): ISODate {
 }
 
 function onBlockPointerDown(date: ISODate, b: MultiDayRenderBlock, e: PointerEvent) {
-  if (e.button !== 0 || b.isDraft) return;
+  if (e.button !== 0 || (b.isDraft && !b.isPendingDraft)) return;
   if ((e.target as HTMLElement).closest('button, .resize-handle')) return;
   e.stopPropagation();
 
@@ -533,11 +590,11 @@ function onBlockPointerDown(date: ISODate, b: MultiDayRenderBlock, e: PointerEve
   }
 
   const occ = b.occ;
-  if (!occ) return;
+  if (!occ && !b.isPendingDraft) return;
   selectedKey.value = b.id;
 
   if (storeState.readOnly) {
-    openEditor({ mode: 'edit', taskId: occ.task.id, date: occ.date });
+    if (occ) openEditor({ mode: 'edit', taskId: occ.task.id, date: occ.date });
     return;
   }
   if (!canEdit()) return;
@@ -552,7 +609,7 @@ function onBlockPointerDown(date: ISODate, b: MultiDayRenderBlock, e: PointerEve
   const startY = e.clientY;
   const pointerId = e.pointerId;
   const isTouch = e.pointerType === 'touch';
-  const allowCrossDay = !occ.task.repeat;
+  const allowCrossDay = b.isPendingDraft || !occ?.task.repeat;
   let lastClientX = e.clientX;
   let lastClientY = e.clientY;
   let started = false;
@@ -570,7 +627,7 @@ function onBlockPointerDown(date: ISODate, b: MultiDayRenderBlock, e: PointerEve
         key: b.id,
         origDate: date,
         targetDate,
-        title: occ.task.title,
+        title: occ ? occ.task.title : b.title,
         startMin: s,
         endMin: s + dur,
         pillMin: s,
@@ -618,8 +675,15 @@ function onBlockPointerDown(date: ISODate, b: MultiDayRenderBlock, e: PointerEve
     const finalStart = drag.value?.startMin ?? origStartMin;
     const finalDate = drag.value?.targetDate ?? date;
     const committed = started && (finalStart !== origStartMin || finalDate !== date);
+    if (committed && b.isPendingDraft) {
+      updatePendingDraftFromTimeline({
+        date: finalDate,
+        startMin: finalStart,
+        endMin: finalStart + dur,
+      });
+    }
     cleanup();
-    if (committed) {
+    if (committed && occ && !b.isPendingDraft) {
       const timeStr = formatMinToHHMM(finalStart);
       if (allowCrossDay && finalDate !== date) {
         const offsetFromOcc = diffDays(occ.start, date);
@@ -662,7 +726,7 @@ function onBlockPointerDown(date: ISODate, b: MultiDayRenderBlock, e: PointerEve
 }
 
 function onResizePointerDown(date: ISODate, b: MultiDayRenderBlock, edge: 'top' | 'bottom', e: PointerEvent) {
-  if (e.button !== 0 || b.kind !== 'single' || !b.occ || !canEdit()) return;
+  if (e.button !== 0 || b.kind !== 'single' || (!b.occ && !b.isPendingDraft) || !canEdit()) return;
   e.stopPropagation();
   e.preventDefault();
 
@@ -690,7 +754,7 @@ function onResizePointerDown(date: ISODate, b: MultiDayRenderBlock, edge: 'top' 
         key: b.id,
         origDate: date,
         targetDate: date,
-        title: occ.task.title,
+        title: occ ? occ.task.title : b.title,
         startMin: s,
         endMin: end,
         pillMin,
@@ -735,8 +799,11 @@ function onResizePointerDown(date: ISODate, b: MultiDayRenderBlock, edge: 'top' 
     const s = drag.value?.startMin ?? origStartMin;
     const end = drag.value?.endMin ?? origEndMin;
     const committed = started && (s !== origStartMin || end !== origEndMin);
+    if (committed && b.isPendingDraft) {
+      updatePendingDraftFromTimeline({ date, startMin: s, endMin: end });
+    }
     cleanup();
-    if (committed) {
+    if (committed && occ && !b.isPendingDraft) {
       void saveTask({ ...occ.task, time: formatMinToHHMM(s), duration: end - s });
     }
   };
@@ -830,7 +897,17 @@ function onColPointerDown(date: ISODate, e: PointerEvent) {
     if (ev.pointerId !== pointerId) return;
     const s = drag.value?.startMin ?? anchorMin;
     const end = drag.value?.endMin ?? Math.min(DAY_MINUTES, anchorMin + DEFAULT_DURATION);
+    const dur = Math.max(MIN_DURATION, end - s);
     const ok = started;
+    if (ok) {
+      setPendingDraft({
+        date,
+        startMin: s,
+        endMin: Math.min(DAY_MINUTES, s + dur),
+        title: '新建事项',
+        source: 'timeline',
+      });
+    }
     cleanup();
     if (ok) {
       openEditor({
@@ -838,7 +915,7 @@ function onColPointerDown(date: ISODate, e: PointerEvent) {
         start: date,
         end: date,
         time: formatMinToHHMM(s),
-        duration: Math.max(MIN_DURATION, end - s),
+        duration: dur,
       });
     }
   };
@@ -868,6 +945,13 @@ function onColDblClick(date: ISODate, e: MouseEvent) {
   if (!canEdit()) return;
   if ((e.target as HTMLElement).closest('.md-event')) return;
   const s = clampMinutes(floorMinutes(minFromGrid(e.clientY)), 0, DAY_MINUTES - DEFAULT_DURATION);
+  setPendingDraft({
+    date,
+    startMin: s,
+    endMin: Math.min(DAY_MINUTES, s + DEFAULT_DURATION),
+    title: '新建事项',
+    source: 'timeline',
+  });
   openEditor({
     mode: 'new',
     start: date,
@@ -942,6 +1026,11 @@ function selectSpan(n: DesktopMultiDays) {
   showZoomBadge(`${n}天`);
 }
 
+function selectPhoneSpan(n: 2 | 3) {
+  phoneDays.value = n;
+  showZoomBadge(`${n}天`);
+}
+
 function selectDensity(h: number, label: string) {
   hourHeight.value = h;
   showZoomBadge(label);
@@ -965,7 +1054,7 @@ function onEditBlock(b: MultiDayRenderBlock) {
 function onMenuBlock(b: MultiDayRenderBlock, e: MouseEvent) {
   if (!b.occ) return;
   selectedKey.value = b.id;
-  void chipMenu(b.occ, e);
+  void chipMenu(b.occ, { x: e.clientX, y: e.clientY });
 }
 
 function onToggleDone(occ: Occurrence) {
@@ -1086,19 +1175,31 @@ onBeforeUnmount(() => {
     <div class="md-subbar">
       <span class="md-range">{{ rangeSummary }}</span>
       <div class="md-controls">
-        <div class="md-pill-group" role="group" aria-label="显示天数">
+        <div v-if="isPhone" class="md-pill-group" role="group" aria-label="显示天数">
           <button
-            v-for="n in ([3, 5, 7] as const)"
+            v-for="n in ([2, 3] as const)"
             :key="n"
             type="button"
             class="md-seg-btn"
-            :class="{ active: daysCount === n }"
+            :class="{ active: effectiveDays === n }"
+            @click="selectPhoneSpan(n)"
+          >
+            {{ n }}天
+          </button>
+        </div>
+        <div v-else class="md-pill-group" role="group" aria-label="显示天数">
+          <button
+            v-for="n in (vpWidth < 900 ? ([3, 5] as const) : ([3, 5, 7] as const))"
+            :key="n"
+            type="button"
+            class="md-seg-btn"
+            :class="{ active: effectiveDays === n }"
             @click="selectSpan(n)"
           >
             {{ n }}天
           </button>
         </div>
-        <div class="md-pill-group" role="group" aria-label="时间轴密度">
+        <div class="md-pill-group md-density-group" role="group" aria-label="时间轴密度">
           <button
             type="button"
             class="md-seg-btn"
@@ -1143,7 +1244,7 @@ onBeforeUnmount(() => {
     <div class="md-head">
       <div class="md-head-row">
         <div class="md-axis-cap">全天</div>
-        <div class="md-day-heads" :style="{ gridTemplateColumns: `repeat(${daysCount}, minmax(0, 1fr))` }">
+        <div class="md-day-heads" :style="{ gridTemplateColumns: `repeat(${effectiveDays}, minmax(0, 1fr))` }">
           <button
             v-for="d in visibleDates"
             :key="`hd-${d}`"
@@ -1163,17 +1264,21 @@ onBeforeUnmount(() => {
 
       <div v-if="hasAnyAllDay" class="md-allday-row">
         <div class="md-axis-spacer" aria-hidden="true" />
-        <div class="md-allday-grid" :style="{ gridTemplateColumns: `repeat(${daysCount}, minmax(0, 1fr))` }">
+        <div class="md-allday-grid" :style="{ gridTemplateColumns: `repeat(${effectiveDays}, minmax(0, 1fr))` }">
           <div v-for="d in visibleDates" :key="`mad-${d}`" class="md-allday-col">
             <button
               v-for="o in (allDayByDate.get(d) ?? []).slice(0, 3)"
               :key="occKey(o)"
               type="button"
               class="md-allday-chip"
-              :class="{ done: o.done }"
+              :class="{
+                done: o.done,
+                'sf-dimmed': spotlightStateOf(o.task) === 'dimmed',
+                'sf-dissolved': spotlightStateOf(o.task) === 'dissolved',
+              }"
               :style="{ '--ev-bar': accentHexOf(o.task) }"
               @click="openEditor({ mode: 'edit', taskId: o.task.id, date: o.date })"
-              @contextmenu.prevent.stop="chipMenu(o, $event)"
+              @contextmenu.prevent.stop="chipMenu(o, { x: $event.clientX, y: $event.clientY })"
             >
               <span class="ad-title">{{ o.task.title }}</span>
             </button>
@@ -1230,7 +1335,7 @@ onBeforeUnmount(() => {
             class="md-cols"
             :style="{
               height: `${timelineHeight}px`,
-              gridTemplateColumns: `repeat(${daysCount}, minmax(0, 1fr))`,
+              gridTemplateColumns: `repeat(${effectiveDays}, minmax(0, 1fr))`,
             }"
           >
             <div v-for="h in HOURS" :key="`mhl-${h}`" class="md-hline" :style="{ top: `${h * hourHeight}px` }" />
@@ -1279,8 +1384,11 @@ onBeforeUnmount(() => {
                     moving: b.isMoving,
                     resizing: b.isResizing,
                     draft: b.isDraft,
+                    'pending-draft': b.isPendingDraft,
                     done: b.done,
-                    dense: isClustered || daysCount >= 7,
+                    dense: isClustered || effectiveDays >= 7,
+                    'sf-dimmed': b.spotlight === 'dimmed' && !b.isMoving && !b.isResizing && !b.isDraft,
+                    'sf-dissolved': b.spotlight === 'dissolved' && !b.isMoving && !b.isResizing && !b.isDraft,
                   },
                 ]"
                 :style="blockStyle(b)"
@@ -1289,7 +1397,7 @@ onBeforeUnmount(() => {
                 @contextmenu.prevent.stop="onMenuBlock(b, $event)"
               >
                 <div
-                  v-if="b.kind === 'single' && !b.isDraft && !isClustered && !storeState.readOnly"
+                  v-if="b.kind === 'single' && (!b.isDraft || b.isPendingDraft) && !isClustered && !storeState.readOnly"
                   class="resize-handle top"
                   @pointerdown.stop="onResizePointerDown(d, b, 'top', $event)"
                 />
@@ -1325,7 +1433,7 @@ onBeforeUnmount(() => {
                 </button>
 
                 <div
-                  v-if="b.kind === 'single' && !b.isDraft && !isClustered && !storeState.readOnly"
+                  v-if="b.kind === 'single' && (!b.isDraft || b.isPendingDraft) && !isClustered && !storeState.readOnly"
                   class="resize-handle bottom"
                   @pointerdown.stop="onResizePointerDown(d, b, 'bottom', $event)"
                 />
@@ -1626,6 +1734,12 @@ onBeforeUnmount(() => {
   align-items: center;
   text-align: left;
   cursor: pointer;
+  transition:
+    filter 230ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 230ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 230ms cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 180ms ease,
+    color 180ms ease;
 }
 .md-allday-chip::before {
   content: '';
@@ -1892,8 +2006,12 @@ onBeforeUnmount(() => {
     width 420ms var(--md-spring-col),
     top 220ms var(--md-spring-snap),
     height 220ms var(--md-spring-snap),
-    background-color 150ms ease,
-    box-shadow 180ms ease;
+    background-color 180ms ease,
+    color 180ms ease,
+    box-shadow 180ms ease,
+    filter 230ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 230ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 230ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .md-event::before {
@@ -1947,7 +2065,50 @@ onBeforeUnmount(() => {
   box-shadow:
     0 16px 32px -6px rgba(15, 14, 13, 0.28),
     0 4px 10px -2px rgba(15, 14, 13, 0.16);
+  transition-property: left, width, top, height, background-color, box-shadow;
   z-index: 26;
+}
+
+.md-event.sf-dimmed,
+.md-allday-chip.sf-dimmed {
+  filter: grayscale(1) saturate(0.08);
+  opacity: 0.62;
+  background: #EAE9E6 !important;
+  color: rgba(28, 25, 23, 0.5) !important;
+}
+
+.md-event.sf-dimmed::before,
+.md-allday-chip.sf-dimmed::before {
+  background: rgba(28, 25, 23, 0.16) !important;
+}
+
+.md-event.sf-dimmed .blk-time,
+.md-event.sf-dimmed .blk-dur {
+  color: rgba(28, 25, 23, 0.42);
+}
+
+.multiday-view.dark .md-event.sf-dimmed,
+.multiday-view.dark .md-allday-chip.sf-dimmed {
+  background: #22242B !important;
+  color: rgba(242, 240, 235, 0.44) !important;
+}
+
+.multiday-view.dark .md-event.sf-dimmed::before,
+.multiday-view.dark .md-allday-chip.sf-dimmed::before {
+  background: rgba(255, 255, 255, 0.18) !important;
+}
+
+.multiday-view.dark .md-event.sf-dimmed .blk-time,
+.multiday-view.dark .md-event.sf-dimmed .blk-dur {
+  color: rgba(242, 240, 235, 0.36);
+}
+
+.md-event.sf-dissolved,
+.md-allday-chip.sf-dissolved {
+  filter: grayscale(1) blur(8px);
+  opacity: 0;
+  transform: scale(0.955);
+  pointer-events: none;
 }
 
 .md-event.draft {
@@ -1957,6 +2118,17 @@ onBeforeUnmount(() => {
     width 420ms var(--md-spring-col),
     top 90ms cubic-bezier(0.2, 0, 0, 1),
     height 90ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.md-event.draft.pending-draft {
+  pointer-events: auto;
+  cursor: grab;
+  outline: 1.5px dashed rgba(255, 255, 255, 0.5);
+  outline-offset: -2.5px;
+}
+
+.md-event.draft.pending-draft.moving {
+  cursor: grabbing;
 }
 
 .md-event.done {
@@ -2172,5 +2344,48 @@ onBeforeUnmount(() => {
 .multiday-view.reduce-motion .md-event {
   transition: none !important;
   animation: none !important;
+}
+
+@media (max-width: 639px) {
+  .md-subbar {
+    padding: 4px 8px 6px 10px;
+    gap: 6px;
+  }
+  .md-head {
+    padding-right: 8px;
+  }
+  .md-canvas {
+    padding-right: 8px;
+  }
+  .md-axis,
+  .md-axis-cap,
+  .md-axis-spacer {
+    width: 44px;
+  }
+  .md-axis-cap,
+  .md-hour {
+    padding-right: 7px;
+  }
+  .md-now-float {
+    display: none;
+  }
+}
+
+@media (max-width: 520px) {
+  .md-density-group {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .md-event,
+  .md-allday-chip {
+    transition: opacity 80ms linear !important;
+  }
+  .md-event.sf-dissolved,
+  .md-allday-chip.sf-dissolved {
+    filter: none;
+    transform: none;
+  }
 }
 </style>

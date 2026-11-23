@@ -6,8 +6,8 @@ const props = withDefaults(defineProps<{ name: IconName | string; size?: number;
   size: 16,
 });
 
-/** The web view (phones / server) has no icon font. */
-const web = typeof window !== 'undefined' && !('__TAURI_INTERNALS__' in window) && (['web', 'mobile'].includes(new URLSearchParams(location.search).get('w') ?? '') || document.documentElement.dataset.window === 'mobile' || import.meta.env.MODE === 'server');
+/** Non-Tauri browsers (macOS/iOS/Android/Linux/Windows browsers) render SVG outlines reliably without local icon fonts. */
+const web = typeof window !== 'undefined' && !('__TAURI_INTERNALS__' in window);
 const svg = computed(() => (SVG_ICONS as Record<string, readonly string[]>)[props.name] ?? (web ? (WEB_SVG as Record<string, readonly string[]>)[props.name] : undefined));
 const glyph = computed(() => (GLYPHS as Record<string, string>)[props.name] ?? '');
 </script>
@@ -21,7 +21,8 @@ const glyph = computed(() => (GLYPHS as Record<string, string>)[props.name] ?? '
     viewBox="0 0 16 16"
     fill="none"
     stroke="currentColor"
-    stroke-width="1"
+    stroke-width="1.25"
+    stroke-linecap="round"
     stroke-linejoin="round"
     :role="title ? 'img' : undefined"
     :aria-label="title"

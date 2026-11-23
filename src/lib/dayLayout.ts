@@ -1,3 +1,6 @@
+import type { ISODate, Task } from '@/types';
+import { addDays, diffDays } from './date';
+
 export const STEP_MIN = 15;
 export const MIN_DURATION = 15;
 export const DEFAULT_DURATION = 60;
@@ -188,4 +191,48 @@ export function layoutDayEvents(items: DayLayoutInput[], preferRightId?: string)
   }
 
   return sorted.map((item) => byId.get(item.id)!);
+}
+
+export interface PendingTimelineDraft {
+  date: ISODate;
+  startMin: number;
+  endMin: number;
+  title: string;
+  color?: string;
+  groupId?: string;
+  source: 'timeline' | 'editor';
+  rev: number;
+}
+
+/** Projects a timed task draft into a live pending timeline block (`null` for all-day tasks). */
+export function pendingDraftFromTask(
+  t: Pick<Task, 'start' | 'time' | 'duration' | 'title' | 'color' | 'groupId'>,
+  rev = 0,
+): PendingTimelineDraft | null {
+  if (!t.time) return null;
+  const startMin = clampMinutes(parseTimeMin(t.time), 0, DAY_MINUTES - MIN_DURATION);
+  const dur = Math.max(MIN_DURATION, typeof t.duration === 'number' && Number.isFinite(t.duration) ? Math.round(t.duration) : DEFAULT_DURATION);
+  const endMin = Math.min(DAY_MINUTES, startMin + dur);
+  return {
+    date: t.start,
+    startMin,
+    endMin,
+    title: t.title.trim() || '新建事项',
+    color: t.color || undefined,
+    groupId: t.groupId || undefined,
+    source: 'editor',
+    rev,
+  };
+}
+
+/** Applies a timeline move/resize patch back onto an open editor draft task, preserving day span. */
+export function applyTimelineDraftPatch(
+  t: Task,
+  patch: { date: ISODate; startMin: number; endMin: number },
+): void {
+  const span = Math.max(0, diffDays(t.start, t.end));
+  t.start = patch.date;
+  t.end = addDays(patch.date, span);
+  t.time = formatMinToHHMM(patch.startMin);
+  t.duration = Math.max(MIN_DURATION, patch.endMin - patch.startMin);
 }

@@ -3,7 +3,10 @@ import type { Task } from '@/types';
 import {
   buildWeekStrip,
   classifyTaskBucket,
+  closeOtherTabs,
   closeTab,
+  closeTabsToRight,
+  cycleTabId,
   defaultWorkspaceTabs,
   filterWorkspaceTasks,
   openOrFocusTab,
@@ -41,6 +44,25 @@ describe('workspaceModel tabs', () => {
     expect(closed.tabs).toHaveLength(3);
     expect(closed.activeId).toBe('tab:tasks');
   });
+
+  it('cycles open tabs forward and backward with wrap-around', () => {
+    const start = defaultWorkspaceTabs();
+    expect(cycleTabId(start, 'tab:daily', 1)).toBe('tab:calendar');
+    expect(cycleTabId(start, 'tab:tasks', 1)).toBe('tab:daily');
+    expect(cycleTabId(start, 'tab:daily', -1)).toBe('tab:tasks');
+    expect(cycleTabId(start, 'tab:settings', 1)).toBe('tab:daily');
+    expect(cycleTabId(start, 'tab:settings', -1)).toBe('tab:tasks');
+    expect(cycleTabId([], 'tab:settings', 1)).toBe('tab:settings');
+
+    const withFour = openOrFocusTab(start, { kind: 'inbox', title: '收集箱' }).tabs;
+    const rightClosed = closeTabsToRight(withFour, 'tab:calendar', 'tab:inbox');
+    expect(rightClosed.tabs.map((t) => t.id)).toEqual(['tab:daily', 'tab:calendar']);
+    expect(rightClosed.activeId).toBe('tab:calendar');
+
+    const othersClosed = closeOtherTabs(withFour, 'tab:inbox');
+    expect(othersClosed.tabs.map((t) => t.id)).toEqual(['tab:inbox']);
+    expect(othersClosed.activeId).toBe('tab:inbox');
+  });
 });
 
 describe('workspaceModel tasks classification and filtering', () => {
@@ -52,6 +74,7 @@ describe('workspaceModel tasks classification and filtering', () => {
     makeTask({ id: 'upcoming', title: 'Next week milestone', start: '2026-11-29', groupId: 'g2' }),
     makeTask({ id: 'someday', title: 'Someday idea', flex: 'someday', notes: 'research url', groupId: 'g1' }),
     makeTask({ id: 'done', title: 'Finished', start: '2026-11-23', done: true, groupId: 'g1' }),
+    makeTask({ id: 'cdonly', title: 'Standalone countdown', start: '2026-12-01', countdown: true, countdownOnly: true, groupId: 'g1' }),
   ];
 
   it('classifies buckets accurately', () => {

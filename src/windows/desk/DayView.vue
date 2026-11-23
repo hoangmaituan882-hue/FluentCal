@@ -26,7 +26,7 @@ import { doc, storeState } from '@/stores/doc';
 import { isDark } from '@/composables/theme';
 import { now } from '@/composables/now';
 import { chipMenu, removeTask } from './menus';
-import { openEditor, page, shownTasks, ui } from './state';
+import { openEditor, page, setPendingDraft, shownTasks, spotlightStateOf, ui, updatePendingDraftFromTimeline } from './state';
 
 const HOUR_HEIGHT = 68;
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
@@ -225,10 +225,16 @@ interface RenderItem {
   repeating: boolean;
   accent: string;
   isDraft: boolean;
+  isPendingDraft: boolean;
   isSelected: boolean;
   isMoving: boolean;
   isResizing: boolean;
   showDuration: boolean;
+}
+
+function pendingAccentHex(color?: string, groupId?: string): string {
+  const k = color || (groupId ? doc.groups[groupId]?.color : undefined);
+  return k ? taskColor(k, isDark.value).bar : '';
 }
 
 const positionedItems = computed<RenderItem[]>(() => {
@@ -250,16 +256,31 @@ const positionedItems = computed<RenderItem[]>(() => {
     inputs.push({ id: key, startMin: s, endMin: Math.max(s + MIN_DURATION, e), order: occ.task.order });
   }
 
+  const pending =
+    ui.pendingDraft && ui.pendingDraft.date === ui.selected && (!d || d.kind !== 'create')
+      ? ui.pendingDraft
+      : null;
+
+  const isPendingActive = Boolean(
+    d && d.key === '__draft__' && (d.kind === 'move' || d.kind === 'resize-top' || d.kind === 'resize-bottom'),
+  );
+
   if (d && (d.kind === 'create' || d.kind === 'allday')) {
     inputs.push({ id: d.key, startMin: d.startMin, endMin: d.endMin, order: 999_999 });
   }
+  if (pending) {
+    const s = isPendingActive && d ? d.startMin : pending.startMin;
+    const e = isPendingActive && d ? d.endMin : pending.endMin;
+    inputs.push({ id: '__draft__', startMin: s, endMin: Math.max(s + MIN_DURATION, e), order: 999_999 });
+  }
 
-  const laid = layoutDayEvents(inputs, pinnedRightId.value || undefined);
+  const laid = layoutDayEvents(inputs, pinnedRightId.value || (pending ? '__draft__' : undefined));
   const laidById = new Map<string, DayLayoutItem>(laid.map((x) => [x.id, x]));
 
   // Keep DOM element order invariant across startMin changes so Vue never moves nodes and restarts CSS transitions.
   const orderedKeys = [...occByKey.keys()].sort((a, b) => a.localeCompare(b));
   if (d && (d.kind === 'create' || d.kind === 'allday')) orderedKeys.push(d.key);
+  if (pending) orderedKeys.push('__draft__');
 
   const out: RenderItem[] = [];
   for (const id of orderedKeys) {
@@ -267,24 +288,33 @@ const positionedItems = computed<RenderItem[]>(() => {
     if (!item) continue;
     const occ = occByKey.get(item.id) ?? null;
     const isDraft = !occ;
+    const isPendingDraft = Boolean(isDraft && pending && id === '__draft__');
     const activeForThis = d?.key === item.id;
     const isMoving = Boolean(activeForThis && (d?.kind === 'move' || d?.kind === 'allday'));
     const isResizing = Boolean(activeForThis && (d?.kind === 'resize-top' || d?.kind === 'resize-bottom'));
     const isSelected = Boolean(isDraft || activeForThis || selectedKey.value === item.id);
-    const showDuration = Boolean(activeForThis && (d?.kind === 'resize-top' || d?.kind === 'resize-bottom' || d?.kind === 'create'));
+    const showDuration = Boolean(
+      isPendingDraft ||
+        (activeForThis && (d?.kind === 'resize-top' || d?.kind === 'resize-bottom' || d?.kind === 'create')),
+    );
 
     out.push({
       key: item.id,
       occ,
-      title: occ ? occ.task.title : d?.title || '新建事项',
+      title: occ ? occ.task.title : isPendingDraft && pending ? pending.title || '新建事项' : d?.title || '新建事项',
       startMin: item.startMin,
       endMin: item.endMin,
       col: item.col,
       colCount: item.colCount,
       done: occ ? occ.done : false,
       repeating: Boolean(occ?.task.repeat),
-      accent: occ ? accentHexOf(occ.task) : d?.accent || '',
+      accent: occ
+        ? accentHexOf(occ.task)
+        : isPendingDraft && pending
+          ? pendingAccentHex(pending.color, pending.groupId)
+          : d?.accent || '',
       isDraft,
+      isPendingDraft,
       isSelected,
       isMoving,
       isResizing,
@@ -369,7 +399,7 @@ function canEdit(): boolean {
 }
 
 function onEventPointerDown(item: RenderItem, e: PointerEvent) {
-  if (e.button !== 0 || !item.occ) return;
+  if (e.button !== 0 || (!item.occ && !item.isPendingDraft)) return;
   if ((e.target as HTMLElement).closest('button, .resize-handle')) return;
   e.stopPropagation();
   if (e.pointerType !== 'touch') e.preventDefault();
@@ -378,7 +408,7 @@ function onEventPointerDown(item: RenderItem, e: PointerEvent) {
   const key = item.key;
   selectedKey.value = key;
   if (storeState.readOnly) {
-    openEditor({ mode: 'edit', taskId: occ.task.id, date: occ.date });
+    if (occ) openEditor({ mode: 'edit', taskId: occ.task.id, date: occ.date });
     return;
   }
   if (!canEdit()) return;
@@ -414,7 +444,7 @@ function onEventPointerDown(item: RenderItem, e: PointerEvent) {
       drag.value = {
         kind: 'move',
         key,
-        title: occ.task.title,
+        title: occ ? occ.task.title : item.title,
         startMin: s,
         endMin: s + dur,
         pillMin: s,
@@ -462,8 +492,15 @@ function onEventPointerDown(item: RenderItem, e: PointerEvent) {
     if (ev.pointerId !== pointerId) return;
     const finalStart = drag.value?.startMin ?? origStartMin;
     const committed = started && finalStart !== origStartMin;
+    if (committed && item.isPendingDraft) {
+      updatePendingDraftFromTimeline({
+        date: ui.selected,
+        startMin: finalStart,
+        endMin: finalStart + dur,
+      });
+    }
     cleanup();
-    if (committed) {
+    if (committed && occ && !item.isPendingDraft) {
       void saveTask({
         ...occ.task,
         time: formatMinToHHMM(finalStart),
@@ -494,7 +531,7 @@ function onEventPointerDown(item: RenderItem, e: PointerEvent) {
 }
 
 function onResizePointerDown(item: RenderItem, edge: 'top' | 'bottom', e: PointerEvent) {
-  if (e.button !== 0 || !item.occ || !canEdit()) return;
+  if (e.button !== 0 || (!item.occ && !item.isPendingDraft) || !canEdit()) return;
   e.stopPropagation();
   e.preventDefault();
 
@@ -529,7 +566,7 @@ function onResizePointerDown(item: RenderItem, edge: 'top' | 'bottom', e: Pointe
       drag.value = {
         kind: edge === 'top' ? 'resize-top' : 'resize-bottom',
         key,
-        title: occ.task.title,
+        title: occ ? occ.task.title : item.title,
         startMin: s,
         endMin: end,
         pillMin,
@@ -577,8 +614,15 @@ function onResizePointerDown(item: RenderItem, edge: 'top' | 'bottom', e: Pointe
     const s = drag.value?.startMin ?? origStartMin;
     const end = drag.value?.endMin ?? origEndMin;
     const committed = started && (s !== origStartMin || end !== origEndMin);
+    if (committed && item.isPendingDraft) {
+      updatePendingDraftFromTimeline({
+        date: ui.selected,
+        startMin: s,
+        endMin: end,
+      });
+    }
     cleanup();
-    if (committed) {
+    if (committed && occ && !item.isPendingDraft) {
       void saveTask({
         ...occ.task,
         time: formatMinToHHMM(s),
@@ -674,7 +718,17 @@ function onTrackPointerDown(e: PointerEvent) {
     if (ev.pointerId !== pointerId) return;
     const s = drag.value?.startMin ?? anchorMin;
     const end = drag.value?.endMin ?? Math.min(DAY_MINUTES, anchorMin + DEFAULT_DURATION);
+    const dur = Math.max(MIN_DURATION, end - s);
     const shouldCreate = started;
+    if (shouldCreate) {
+      setPendingDraft({
+        date: ui.selected,
+        startMin: s,
+        endMin: Math.min(DAY_MINUTES, s + dur),
+        title: '新建事项',
+        source: 'timeline',
+      });
+    }
     cleanup();
     if (shouldCreate) {
       openEditor({
@@ -682,7 +736,7 @@ function onTrackPointerDown(e: PointerEvent) {
         start: ui.selected,
         end: ui.selected,
         time: formatMinToHHMM(s),
-        duration: Math.max(MIN_DURATION, end - s),
+        duration: dur,
       });
     }
   };
@@ -712,6 +766,13 @@ function onTrackDblClick(e: MouseEvent) {
   if (!canEdit()) return;
   if ((e.target as HTMLElement).closest('.day-event')) return;
   const s = clampMinutes(snapMinutes(pointerMinFromTrack(e.clientY)), 0, DAY_MINUTES - DEFAULT_DURATION);
+  setPendingDraft({
+    date: ui.selected,
+    startMin: s,
+    endMin: Math.min(DAY_MINUTES, s + DEFAULT_DURATION),
+    title: '新建事项',
+    source: 'timeline',
+  });
   openEditor({
     mode: 'new',
     start: ui.selected,
@@ -846,7 +907,7 @@ function onEditCard(occ: Occurrence) {
 
 function onCardMenu(occ: Occurrence, e: MouseEvent) {
   selectedKey.value = occKey(occ);
-  void chipMenu(occ, e);
+  void chipMenu(occ, { x: e.clientX, y: e.clientY });
 }
 
 function onViewKeyDown(e: KeyboardEvent) {
@@ -1001,7 +1062,12 @@ onBeforeUnmount(() => {
           v-for="occ in allDayOccs"
           :key="occKey(occ)"
           class="allday-pill"
-          :class="{ done: occ.done, draggable: !storeState.readOnly && !occ.task.repeat && occ.start === occ.end }"
+          :class="{
+            done: occ.done,
+            draggable: !storeState.readOnly && !occ.task.repeat && occ.start === occ.end,
+            'sf-dimmed': spotlightStateOf(occ.task) === 'dimmed',
+            'sf-dissolved': spotlightStateOf(occ.task) === 'dissolved',
+          }"
           :style="accentHexOf(occ.task) ? { '--pill-accent': accentHexOf(occ.task) } : undefined"
           @pointerdown="onAllDayPointerDown(occ, $event)"
           @click="(!canEdit() || occ.task.repeat || occ.start !== occ.end) && onEditCard(occ)"
@@ -1082,8 +1148,11 @@ onBeforeUnmount(() => {
                 moving: item.isMoving,
                 resizing: item.isResizing,
                 draft: item.isDraft,
+                'pending-draft': item.isPendingDraft,
                 done: item.done,
                 'has-accent': !!item.accent,
+                'sf-dimmed': !!item.occ && !item.isDraft && !item.isMoving && !item.isResizing && spotlightStateOf(item.occ.task) === 'dimmed',
+                'sf-dissolved': !!item.occ && !item.isDraft && !item.isMoving && !item.isResizing && spotlightStateOf(item.occ.task) === 'dissolved',
               },
             ]"
             :style="cardStyle(item)"
@@ -1094,7 +1163,7 @@ onBeforeUnmount(() => {
             <span v-if="item.accent" class="ev-accent" aria-hidden="true" />
 
             <div
-              v-if="!item.isDraft && !storeState.readOnly"
+              v-if="(!item.isDraft || item.isPendingDraft) && !storeState.readOnly"
               class="resize-handle top"
               @pointerdown.stop="onResizePointerDown(item, 'top', $event)"
             />
@@ -1119,7 +1188,7 @@ onBeforeUnmount(() => {
             </button>
 
             <div
-              v-if="!item.isDraft && !storeState.readOnly"
+              v-if="(!item.isDraft || item.isPendingDraft) && !storeState.readOnly"
               class="resize-handle bottom"
               @pointerdown.stop="onResizePointerDown(item, 'bottom', $event)"
             />
@@ -1311,7 +1380,11 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 6px;
   cursor: pointer;
-  transition: background-color 140ms ease;
+  transition:
+    background-color 140ms ease,
+    filter 230ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 230ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 230ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .allday-pill.draggable {
@@ -1550,7 +1623,9 @@ onBeforeUnmount(() => {
     transform 280ms var(--dv-spring-snap),
     background-color 160ms ease,
     border-color 160ms ease,
-    box-shadow 200ms ease;
+    box-shadow 200ms ease,
+    filter 230ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 230ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .day-event.has-accent {
@@ -1641,6 +1716,17 @@ onBeforeUnmount(() => {
     0 4px 10px -2px rgba(15, 14, 13, 0.12),
     inset 0 1px 0 rgba(255, 255, 255, 0.09);
   z-index: 26;
+}
+
+.day-event.draft.pending-draft {
+  pointer-events: auto;
+  cursor: grab;
+  outline: 1.5px dashed rgba(255, 255, 255, 0.45);
+  outline-offset: -3px;
+}
+
+.day-event.draft.pending-draft.moving {
+  cursor: grabbing;
 }
 
 .day-event.done {
@@ -1818,5 +1904,66 @@ onBeforeUnmount(() => {
 .day-view.reduce-motion .snap-guide {
   transition: none !important;
   animation: none !important;
+}
+
+.day-event.sf-dimmed,
+.allday-pill.sf-dimmed {
+  filter: grayscale(1) saturate(0.08);
+  opacity: 0.56;
+  background: #EAE9E6 !important;
+  color: rgba(28, 25, 23, 0.52) !important;
+}
+
+.day-event.sf-dimmed .ev-accent,
+.allday-pill.sf-dimmed .pill-dot {
+  background: rgba(28, 25, 23, 0.22) !important;
+}
+
+.day-view.dark .day-event.sf-dimmed,
+.day-view.dark .allday-pill.sf-dimmed {
+  background: #22242B !important;
+  color: rgba(242, 240, 235, 0.44) !important;
+}
+
+.day-view.dark .day-event.sf-dimmed .ev-accent,
+.day-view.dark .allday-pill.sf-dimmed .pill-dot {
+  background: rgba(255, 255, 255, 0.22) !important;
+}
+
+.day-event.sf-dissolved,
+.allday-pill.sf-dissolved {
+  filter: grayscale(1) blur(8px);
+  opacity: 0;
+  transform: scale(0.955);
+  pointer-events: none;
+}
+
+@media (max-width: 639px) {
+  .day-head {
+    padding: 10px 12px 10px 50px;
+  }
+  .allday-strip {
+    padding: 2px 12px 8px 0;
+  }
+  .allday-label,
+  .time-axis {
+    width: 50px;
+  }
+  .allday-label,
+  .hour-label {
+    padding-right: 8px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .day-event,
+  .allday-pill {
+    transition: opacity 80ms linear !important;
+  }
+  .day-event.sf-dissolved,
+  .allday-pill.sf-dissolved {
+    filter: none;
+    transform: none;
+  }
 }
 </style>

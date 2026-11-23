@@ -178,4 +178,51 @@ function key(e: KeyboardEvent) {
   .nav-item { width: 40px; margin-left: 4px; margin-right: 4px; padding: 0; justify-content: center; }
   .content { padding: 0 20px 24px 16px; }
 }
+
+@container (max-width: 580px) {
+  .layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .pane {
+    flex-direction: row;
+    align-items: center;
+    overflow-x: auto;
+    overflow-y: hidden;
+    gap: 6px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--divider);
+    scrollbar-width: none;
+  }
+  .pane::-webkit-scrollbar { display: none; }
+  .pane-title, .pill { display: none; }
+  .list {
+    flex-direction: row;
+    gap: 4px;
+    flex: none;
+  }
+  .foot {
+    margin-top: 0;
+    padding-top: 0;
+    padding-left: 4px;
+  }
+  .lbl { display: inline; font-size: 12.5px; }
+  .nav-item {
+    width: auto;
+    height: 34px;
+    margin: 0;
+    padding: 0 11px;
+    gap: 6px;
+    flex: none;
+    border-radius: 999px;
+    border: 1px solid transparent;
+  }
+  .nav-item.sel {
+    background: var(--card-fill);
+    border-color: var(--card-stroke);
+    font-weight: 600;
+  }
+  .content { padding: 4px 16px 88px; }
+  .page-title { font-size: 22px; line-height: 28px; margin: 12px 0 16px; }
+}
 </style>

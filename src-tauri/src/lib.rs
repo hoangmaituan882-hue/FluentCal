@@ -277,8 +277,18 @@ fn open_aux_window(app: &AppHandle, label: &'static str, title: &'static str, si
             .theme(Some(theme))
             .visible(false)
             .build();
-        if let Err(e) = built {
-            eprintln!("could not open the {label} window: {e}");
+        match built {
+            Ok(win) => {
+                if label == "editor" {
+                    let h = app.clone();
+                    win.on_window_event(move |ev| {
+                        if matches!(ev, WindowEvent::Destroyed) {
+                            let _ = h.emit_to("desk", "editor://closed", ());
+                        }
+                    });
+                }
+            }
+            Err(e) => eprintln!("could not open the {label} window: {e}"),
         }
     });
 }
@@ -420,6 +430,15 @@ fn settings_open(app: AppHandle, page: Option<String>) {
 #[tauri::command]
 fn editor_open(app: AppHandle, payload: Value) {
     open_editor(&app, payload);
+}
+
+#[tauri::command]
+fn editor_draft_sync(app: AppHandle, webview: tauri::Webview, draft: Option<Value>) {
+    if webview.label() == "editor" {
+        let _ = app.emit_to("desk", "editor://draft", draft);
+    } else {
+        let _ = app.emit_to("editor", "desk://draft", draft);
+    }
 }
 
 #[tauri::command]
@@ -651,6 +670,7 @@ pub fn run() {
             desk_hide,
             settings_open,
             editor_open,
+            editor_draft_sync,
             workspace_open,
             pending_take,
             app_info,

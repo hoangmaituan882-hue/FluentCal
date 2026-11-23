@@ -1,6 +1,6 @@
 import { DEFAULT_SETTINGS, mergeDefaults } from "@/defaults";
 import { isISODate } from "@/lib/date";
-import { sanitizeChecklist, sanitizeLinks, sanitizeStatus } from "@/lib/taskMeta";
+import { sanitizeChecklist, sanitizeLinks, sanitizePriority, sanitizeStatus } from "@/lib/taskMeta";
 import type { Doc, Task } from "@/types";
 
 export function emptyDocument(): Doc {
@@ -111,17 +111,32 @@ export function readDocument(text: string): Doc {
     delete v.doneOn;
     delete v.doneOnDates;
     const status = sanitizeStatus(v.status);
+    const priority = sanitizePriority(v.priority);
+    const starred = v.starred === true ? true : undefined;
     const checklist = sanitizeChecklist(v.checklist);
     const links = sanitizeLinks(v.links);
     delete v.status;
+    delete v.priority;
+    delete v.starred;
     delete v.checklist;
     delete v.links;
+    const countdownOnly = v.countdownOnly === true ? true : undefined;
+    const countdownMode = v.countdownMode === "up" || v.countdownMode === "down" ? v.countdownMode : undefined;
+    const countdownPinned = v.countdownPinned === true ? true : undefined;
+    delete v.countdownOnly;
+    delete v.countdownMode;
+    delete v.countdownPinned;
     out.tasks[id] = {
       ...v,
       ...(duration !== undefined ? { duration } : {}),
       ...(status ? { status } : {}),
+      ...(priority ? { priority } : {}),
+      ...(starred ? { starred } : {}),
       ...(checklist ? { checklist } : {}),
       ...(links ? { links } : {}),
+      ...(countdownOnly ? { countdownOnly } : {}),
+      ...(countdownMode ? { countdownMode } : {}),
+      ...(countdownPinned ? { countdownPinned } : {}),
       ...(doneOn ? { doneOn } : {}),
       ...(Object.keys(doneOnDates).length ? { doneOnDates } : {}),
       id,

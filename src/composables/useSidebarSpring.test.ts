@@ -72,4 +72,32 @@ describe('sidebar magnetic spring physics', () => {
     }
     expect(Math.abs(closing.x)).toBeLessThan(1);
   });
+
+  it('supports custom SidebarSpringBounds for workspace sidebar widths', () => {
+    const wsBounds = { min: 204, defaultWidth: 236, max: 420, collapseAt: 128 };
+    const detent = applyDragField(244, wsBounds);
+    expect(detent.nearDetent).toBe(true);
+    expect(detent.willCollapse).toBe(false);
+    expect(detent.target).toBeLessThan(244);
+    expect(detent.target).toBeGreaterThan(236);
+
+    const over = applyDragField(470, wsBounds);
+    expect(over.target).toBeCloseTo(420 + 50 * 0.22, 5);
+
+    const resist = applyDragField(160, wsBounds);
+    expect(resist.willCollapse).toBe(false);
+    expect(resist.target).toBeGreaterThan(160);
+    expect(resist.target).toBeLessThan(204);
+
+    const collapsing = applyDragField(110, wsBounds);
+    expect(collapsing.willCollapse).toBe(true);
+    expect(collapsing.target).toBeCloseTo(110 * 0.35, 5);
+
+    expect(resolveReleaseTarget(120, 0, wsBounds)).toEqual({ open: false, width: 0 });
+    expect(resolveReleaseTarget(180, -450, wsBounds)).toEqual({ open: false, width: 0 });
+    expect(resolveReleaseTarget(180, 0, wsBounds)).toEqual({ open: true, width: 204 });
+    expect(resolveReleaseTarget(245, 50, wsBounds)).toEqual({ open: true, width: 236 });
+    expect(resolveReleaseTarget(340, 0, wsBounds)).toEqual({ open: true, width: 340 });
+    expect(resolveReleaseTarget(480, 0, wsBounds)).toEqual({ open: true, width: 420 });
+  });
 });

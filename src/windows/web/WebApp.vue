@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { t as tr, language, languagePreference, setWebLanguage } from '@/i18n';
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch, watchEffect } from 'vue';
-import { FButton, FInfoBar, FSegmented, FSelect } from '@/fluent';
+import { FButton, FInfoBar, FSegmented, FSelect, showMenu, type MenuItem } from '@/fluent';
 import { call, on } from '@/api';
 import { doc, initStore, patchSettings, storeState } from '@/stores/doc';
 import { deskVars, startThemeSync } from '@/composables/theme';
 import { startClock } from '@/composables/now';
+import { useViewport } from '@/composables/useViewport';
 import type { CalendarView } from '@/types';
 import type { WebStatus } from '@/webApi';
 import { clearReveal, goToday, notify, page, ui, viewTitle } from '../desk/state';
@@ -17,6 +18,7 @@ import CountdownBar from '../desk/CountdownBar.vue';
 import AgendaView from './AgendaView.vue';
 import TaskDetails from './TaskDetails.vue';
 import GroupFilter from './GroupFilter.vue';
+import WebMobileNav from './WebMobileNav.vue';
 
 /** Read-only calendar for phones and other computers in the local network (WEB, 需求文档 4.10). */
 const GanttView = defineAsyncComponent(() => import('../desk/gantt/GanttView.vue'));
@@ -37,9 +39,7 @@ void call<{ status: WebStatus; pc: string }>('web_status').then(onStatus);
 
 // Phones start on the list; the choice is kept in this browser.
 const VIEW_KEY = 'fluentcal.web.view';
-const narrow = ref(matchMedia('(max-width: 640px)').matches);
-const mq = matchMedia('(max-width: 640px)');
-const onMq = () => (narrow.value = mq.matches);
+const { isPhone: narrow } = useViewport();
 const chosen = ref(localStorage.getItem(VIEW_KEY) ?? '');
 const view = computed(() => chosen.value || (narrow.value ? 'list' : doc.settings.calendar.view));
 watchEffect(() => { ui.activeView = view.value; });
@@ -122,19 +122,40 @@ function onKey(e: KeyboardEvent) {
   } else return;
   e.preventDefault();
 }
+function openLanguageMenu(e: MouseEvent) {
+  const anchor = e.currentTarget as HTMLElement;
+  const items: MenuItem[] = languages.value.map((lang) => ({
+    label: lang.label,
+    radio: true,
+    checked: languagePreference.value === lang.value,
+    action: () => setWebLanguage(lang.value),
+  }));
+  void showMenu(items, anchor, { placement: 'bottom-end' });
+}
+
+function toggleWebSearch() {
+  ui.searchOpen = !ui.searchOpen;
+}
+
+function toggleMonthWeeks() {
+  viewModel.value = view.value === 'weeks' ? 'month' : 'weeks';
+}
+
+function onLanguageChange(v: string | number) {
+  setWebLanguage(String(v));
+}
+
 onMounted(() => {
   window.addEventListener('keydown', onKey);
-  mq.addEventListener('change', onMq);
 });
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKey);
-  mq.removeEventListener('change', onMq);
 });
 </script>
 
 <template>
   <div class="web" :class="{ narrow }">
-    <header class="bar">
+    <header class="bar" :class="{ 'm-bar': narrow }">
       <div v-if="view === 'list'" class="ranges" role="tablist" :aria-label="tr('列表')">
         <button
           v-for="r in ranges"
@@ -151,24 +172,53 @@ onBeforeUnmount(() => {
         </button>
       </div>
       <h1 v-else class="title">{{ title }}</h1>
-      <template v-if="view === 'day' || view === 'multiday' || view === 'month' || view === 'weeks'">
+      <template v-if="!narrow && (view === 'day' || view === 'multiday' || view === 'month' || view === 'weeks')">
         <FButton variant="subtle" size="icon" icon="chevronLeft" :title="view === 'day' ? '上一天' : view === 'multiday' ? '上一组日期' : view === 'weeks' ? tr('上一周') : tr('上个月')" @click="page(-1)" />
         <FButton variant="subtle" size="icon" icon="chevronRight" :title="view === 'day' ? '下一天' : view === 'multiday' ? '下一组日期' : view === 'weeks' ? tr('下一周') : tr('下个月')" @click="page(1)" />
         <FButton variant="subtle" size="small" @click="goToday">{{ tr("今天") }}</FButton>
       </template>
       <span class="grow" />
       <FSelect
+        v-if="!narrow"
         class="language"
         :label="tr('显示语言')"
         :model-value="languagePreference"
         :options="languages"
         :width="152"
-        @update:model-value="setWebLanguage(String($event))"
+        @update:model-value="onLanguageChange"
       />
-      <FSegmented v-model="viewModel" class="views" :options="views" :label="tr('视图')" />
+      <FSegmented v-if="!narrow" v-model="viewModel" class="views" :options="views" :label="tr('视图')" />
       <GroupFilter v-if="view !== 'gantt'" />
-      <FButton variant="subtle" size="icon" icon="search" :title="tr('搜索')" @click="ui.searchOpen = !ui.searchOpen" />
+      <FButton variant="subtle" size="icon" icon="search" :title="tr('搜索')" @click="toggleWebSearch" />
+      <FButton
+        v-if="narrow"
+        variant="subtle"
+        size="icon"
+        icon="globe"
+        :title="tr('显示语言')"
+        @click="openLanguageMenu"
+      />
     </header>
+
+    <div
+      v-if="narrow && (view === 'day' || view === 'multiday' || view === 'month' || view === 'weeks')"
+      class="m-cal-bar"
+    >
+      <div class="m-cal-steps">
+        <FButton variant="subtle" size="icon" icon="chevronLeft" :title="view === 'day' ? '上一天' : view === 'multiday' ? '上一组日期' : view === 'weeks' ? tr('上一周') : tr('上个月')" @click="page(-1)" />
+        <FButton variant="subtle" size="small" @click="goToday">{{ tr("今天") }}</FButton>
+        <FButton variant="subtle" size="icon" icon="chevronRight" :title="view === 'day' ? '下一天' : view === 'multiday' ? '下一组日期' : view === 'weeks' ? tr('下一周') : tr('下个月')" @click="page(1)" />
+      </div>
+      <button
+        v-if="view === 'month' || view === 'weeks'"
+        type="button"
+        class="m-mode-pill"
+        @click="toggleMonthWeeks"
+      >
+        {{ view === 'weeks' ? tr('月') : tr('多周') }}
+      </button>
+    </div>
+
     <FInfoBar v-if="notice" class="notice" :severity="notice.sev">{{ notice.text }}</FInfoBar>
     <FInfoBar v-if="ui.revealTask" class="notice">{{ tr('已临时显示定位任务，切换视图或筛选后恢复') }} <FButton variant="subtle" @click="clearReveal">{{ tr('退出定位') }}</FButton></FInfoBar>
     <main class="body">
@@ -186,7 +236,8 @@ onBeforeUnmount(() => {
         <div v-if="ui.toast" class="toast" role="status">{{ ui.toast.text }}</div>
       </Transition>
     </main>
-    <footer class="foot">{{ tr("只读 ·") }}{{ pc ? tr("来自 {0} 上的 FluentCal", pc) : 'FluentCal' }}</footer>
+    <footer v-if="!narrow" class="foot">{{ tr("只读 ·") }}{{ pc ? tr("来自 {0} 上的 FluentCal", pc) : 'FluentCal' }}</footer>
+    <WebMobileNav v-if="narrow" v-model="viewModel" />
     <TaskDetails />
   </div>
 </template>
@@ -195,11 +246,13 @@ onBeforeUnmount(() => {
 .web {
   position: fixed;
   inset: 0;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
   background: var(--solid-base);
   color: var(--text-primary);
   font-size: calc(14px * var(--fs));
+  padding-top: env(safe-area-inset-top);
 }
 .bar {
   flex: none;
@@ -302,10 +355,39 @@ onBeforeUnmount(() => {
 .narrow .title {
   font-size: 18px;
 }
-/* A phone: the two selects take a line of their own, under the title and the buttons.
-   (:deep: the language box has two roots, so this component's scope isn't on it) */
-.narrow :deep(.language),
-.narrow :deep(.views) {
-  order: 1;
+.bar.m-bar {
+  flex-wrap: nowrap;
+  padding: 6px 10px 4px;
+}
+.m-cal-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 10px 6px;
+}
+.m-cal-steps {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.m-mode-pill {
+  height: 28px;
+  padding: 0 11px;
+  border-radius: 999px;
+  border: 1px solid var(--card-stroke);
+  background: var(--card-fill);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 550;
+  cursor: pointer;
+}
+.web.narrow .body {
+  padding-bottom: calc(68px + env(safe-area-inset-bottom));
+}
+.web.narrow .toast {
+  bottom: calc(74px + env(safe-area-inset-bottom));
 }
 </style>

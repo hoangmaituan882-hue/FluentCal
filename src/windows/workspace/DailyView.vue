@@ -1,25 +1,57 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
-import { FIcon, taskColor } from '@/fluent';
+import { FIcon, showMenu, taskColor, type MenuItem } from '@/fluent';
 import type { ISODate, Task } from '@/types';
 import { addDays, parts, startOfMonth, weekday, WEEKDAY_SHORT } from '@/lib/date';
+import { flexKind } from '@/lib/flex';
 import { displayInfo as dayInfo } from '@/lib/lunar';
 import { occurrences, type Occurrence } from '@/lib/recur';
 import { countdowns } from '@/lib/countdown';
-import { checklistStats, effectiveStatus } from '@/lib/taskMeta';
-import { addTask, setOccurrenceDone } from '@/lib/tasks';
+import {
+  applyTaskStatus,
+  checklistStats,
+  effectivePriority,
+  effectiveStatus,
+  effectiveWorkspaceStatus,
+  PRIORITY_META,
+  STATUS_META,
+  WORKSPACE_STATUS_ORDER,
+} from '@/lib/taskMeta';
+import { addTask, saveTask, setOccurrenceDone } from '@/lib/tasks';
 import { doc, taskList } from '@/stores/doc';
 import { isDark } from '@/composables/theme';
 import { now } from '@/composables/now';
-import { goToday, openEditor, ui } from '../desk/state';
+import { useViewport } from '@/composables/useViewport';
+import { goToday, ui } from '../desk/state';
 import DayView from '../desk/DayView.vue';
+import GroupSquircle from './GroupSquircle.vue';
+import MobileCalicoStage from './MobileCalicoStage.vue';
+import PriorityGlyph from './PriorityGlyph.vue';
+import StatusGlyph from './StatusGlyph.vue';
+import { useSlidingIndicator } from './useSlidingIndicator';
 import { buildWeekStrip } from './workspaceModel';
+import { openTaskContextMenu, STATUS_DOT_COLOR } from './workspaceMenus';
 
 const emit = defineEmits<{
   openTask: [taskId: string, date?: ISODate];
+  openCountdowns: [];
 }>();
 
 const quickTitle = ref('');
+const { width: vpWidth, isPhone, isTouch } = useViewport();
+const isStackedDaily = computed(() => vpWidth.value < 880);
+const mobilePane = ref<'overview' | 'timeline'>('overview');
+const paneSwitchRef = ref<HTMLElement>();
+
+const { style: panePillStyle, ready: panePillReady, visible: panePillVisible } = useSlidingIndicator(
+  paneSwitchRef,
+  '.dp-sw-btn.active',
+  [mobilePane, isStackedDaily],
+);
+
+function setMobilePane(pane: 'overview' | 'timeline') {
+  mobilePane.value = pane;
+}
 
 const selectedDate = computed(() => ui.selected || now.value);
 const selectedParts = computed(() => parts(selectedDate.value));
@@ -37,6 +69,7 @@ const taskDaysSet = computed(() => {
   const end = weekDays.value[weekDays.value.length - 1];
   const days = new Set<ISODate>();
   for (const t of taskList.value) {
+    if (t.countdownOnly) continue;
     for (const o of occurrences(t, start, end)) {
       let d = o.start < start ? start : o.start;
       const limit = o.end > end ? end : o.end;
@@ -53,6 +86,7 @@ const dayOccurrences = computed<Occurrence[]>(() => {
   const d = selectedDate.value;
   const out: Occurrence[] = [];
   for (const t of taskList.value) {
+    if (t.countdownOnly) continue;
     out.push(...occurrences(t, d, d));
   }
   out.sort((a, b) => {
@@ -70,7 +104,11 @@ const dayOccurrences = computed<Occurrence[]>(() => {
 
 const inProgressTasks = computed<Task[]>(() =>
   taskList.value
-    .filter((t) => !t.done && effectiveStatus(t) === 'in_progress')
+    .filter((t) => {
+      if (t.countdownOnly || t.done) return false;
+      const st = effectiveWorkspaceStatus(t);
+      return st === 'in_progress' || st === 'in_review';
+    })
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .slice(0, 4),
 );
@@ -112,6 +150,36 @@ function toggleOcc(occ: Occurrence) {
   void setOccurrenceDone(occ.task, occ.date, !occ.done);
 }
 
+function occStatus(occ: Occurrence) {
+  return occ.done ? 'done' : effectiveWorkspaceStatus(occ.task);
+}
+
+function onOccStatusClick(occ: Occurrence, e: MouseEvent) {
+  if (e.shiftKey || occ.task.repeat || flexKind(occ.task)) {
+    toggleOcc(occ);
+    return;
+  }
+  const anchor = e.currentTarget as HTMLElement;
+  const cur = occStatus(occ);
+  const items: MenuItem[] = WORKSPACE_STATUS_ORDER.map((st) => ({
+    key: `st:${st}`,
+    label: STATUS_META[st].label,
+    colorDot: STATUS_DOT_COLOR[st],
+    radio: true,
+    checked: cur === st,
+    action: () => void saveTask(applyTaskStatus(occ.task, st)),
+  }));
+  void showMenu(items, anchor, { placement: 'bottom-start' });
+}
+
+function openDayTaskMenu(t: Task, date: ISODate | undefined, e: MouseEvent) {
+  const at =
+    e.clientX || e.clientY
+      ? { x: e.clientX, y: e.clientY }
+      : ((e.currentTarget as HTMLElement) || { x: 24, y: 24 });
+  void openTaskContextMenu(t, at, { date, onOpen: () => emit('openTask', t.id, date) });
+}
+
 onMounted(() => {
   ui.activeView = 'day';
 });
@@ -122,7 +190,15 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="ws-daily">
+  <div class="ws-daily" :class="{ stacked: isStackedDaily, phone: isPhone }">
+    <!-- Dedicated Calico 3-Detent Split Calendar & Agenda Stage on Phone (< 640px) -->
+    <MobileCalicoStage
+      v-if="isPhone"
+      @open-task="(id) => emit('openTask', id)"
+      @open-countdowns="emit('openCountdowns')"
+    />
+
+    <template v-else>
     <!-- Folio Daily editorial header + Week Strip -->
     <div class="daily-top">
       <div class="daily-head-row">
@@ -158,15 +234,45 @@ onBeforeUnmount(() => {
           <span class="wd-dot" :class="{ on: taskDaysSet.has(d) }" aria-hidden="true" />
         </button>
       </div>
+
+      <div v-if="isStackedDaily" ref="paneSwitchRef" class="dp-pane-switch" role="tablist" aria-label="今日视图切换">
+        <span
+          v-if="panePillVisible"
+          class="ws-slide-pill dp-sw-pill"
+          :class="{ 'no-anim': !panePillReady }"
+          :style="panePillStyle"
+          aria-hidden="true"
+        />
+        <button
+          type="button"
+          class="dp-sw-btn"
+          :class="{ active: mobilePane === 'overview' }"
+          role="tab"
+          :aria-selected="mobilePane === 'overview'"
+          @click="setMobilePane('overview')"
+        >
+          今日概览
+        </button>
+        <button
+          type="button"
+          class="dp-sw-btn"
+          :class="{ active: mobilePane === 'timeline' }"
+          role="tab"
+          :aria-selected="mobilePane === 'timeline'"
+          @click="setMobilePane('timeline')"
+        >
+          时间轴
+        </button>
+      </div>
     </div>
 
     <!-- Split Workspace: Reused DayView Timeline (left) + Focus & Tasks Panel (right) -->
-    <div class="daily-grid">
-      <div class="daily-timeline-card ws-card">
+    <div class="daily-grid" :class="{ stacked: isStackedDaily }">
+      <div v-if="!isStackedDaily || mobilePane === 'timeline'" class="daily-timeline-card ws-card">
         <DayView />
       </div>
 
-      <div class="daily-side">
+      <div v-if="!isStackedDaily || mobilePane === 'overview'" class="daily-side">
         <section class="ws-card daily-panel">
           <header class="dp-head">
             <h2 class="dp-title">当日待办</h2>
@@ -180,30 +286,61 @@ onBeforeUnmount(() => {
               class="dp-item"
               :class="{ done: occ.done }"
               @click="emit('openTask', occ.task.id, occ.date)"
+              @contextmenu.prevent="openDayTaskMenu(occ.task, occ.date, $event)"
             >
               <button
                 type="button"
-                class="ws-check-circle"
-                :class="{
-                  done: occ.done,
-                  'in-progress': !occ.done && effectiveStatus(occ.task) === 'in_progress',
-                }"
-                :title="occ.done ? '标为未完成' : '标为完成'"
-                @click.stop="toggleOcc(occ)"
+                class="dp-glyph-btn"
+                :title="`状态：${STATUS_META[occStatus(occ)].label}（Shift+点击快速完成）`"
+                @click.stop="onOccStatusClick(occ, $event)"
               >
-                <svg viewBox="0 0 12 12"><path d="M2.5 6.3 5 8.8 9.5 3.6" /></svg>
+                <StatusGlyph :status="occStatus(occ)" :size="15" interactive />
               </button>
               <div class="dp-item-body">
                 <div class="dp-item-title">{{ occ.task.title }}</div>
                 <div class="dp-item-meta">
                   <span v-if="occ.task.time" class="dp-chip">{{ occ.task.time }}</span>
-                  <span v-if="!occ.done && effectiveStatus(occ.task) === 'in_progress'" class="dp-chip progress">进行中</span>
+                  <span
+                    v-if="!occ.done && (occStatus(occ) === 'in_progress' || occStatus(occ) === 'in_review')"
+                    class="dp-chip"
+                    :class="occStatus(occ)"
+                  >
+                    {{ STATUS_META[occStatus(occ)].label }}
+                  </span>
                   <span v-if="occ.task.checklist?.length" class="dp-chip">
                     {{ checklistStats(occ.task.checklist).done }}/{{ occ.task.checklist.length }}
                   </span>
                 </div>
               </div>
-              <span class="dp-dot" :style="{ background: groupColorOf(occ.task) }" />
+              <div class="dp-item-trail">
+                <span
+                  v-if="effectivePriority(occ.task) !== 'none'"
+                  class="dp-pri-wrap"
+                  :title="`优先级：${PRIORITY_META[effectivePriority(occ.task)].label}`"
+                >
+                  <PriorityGlyph
+                    :priority="effectivePriority(occ.task)"
+                    :size="13"
+                  />
+                </span>
+                <GroupSquircle
+                  v-if="occ.task.groupId && doc.groups[occ.task.groupId]"
+                  :name="doc.groups[occ.task.groupId].name"
+                  :color-key="doc.groups[occ.task.groupId].color"
+                  :icon="doc.groups[occ.task.groupId].icon"
+                  :size="17"
+                />
+                <button
+                  v-if="isTouch || isPhone"
+                  type="button"
+                  class="dp-more-btn"
+                  title="更多操作"
+                  aria-label="更多操作"
+                  @click.stop="openDayTaskMenu(occ.task, occ.date, $event)"
+                >
+                  <FIcon name="more" :size="13" />
+                </button>
+              </div>
             </div>
           </div>
           <div v-else class="dp-empty">今天还没有安排任务，直接在下方快速添加，或在左侧时间轴拖拽排程。</div>
@@ -221,7 +358,7 @@ onBeforeUnmount(() => {
 
         <section v-if="inProgressTasks.length" class="ws-card daily-panel">
           <header class="dp-head">
-            <h2 class="dp-title">正在进行</h2>
+            <h2 class="dp-title">进行中与待复核</h2>
             <span class="dp-count">{{ inProgressTasks.length }}</span>
           </header>
           <div class="dp-list">
@@ -230,9 +367,13 @@ onBeforeUnmount(() => {
               :key="t.id"
               class="dp-focus-row"
               @click="emit('openTask', t.id)"
+              @contextmenu.prevent="openDayTaskMenu(t, undefined, $event)"
             >
               <div class="dp-focus-top">
-                <span class="dp-focus-title">{{ t.title }}</span>
+                <span class="dp-focus-title-wrap">
+                  <StatusGlyph :status="effectiveWorkspaceStatus(t)" :size="13" />
+                  <span class="dp-focus-title">{{ t.title }}</span>
+                </span>
                 <span class="dp-focus-pct">{{ t.progress }}%</span>
               </div>
               <div class="dp-bar">
@@ -242,31 +383,35 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
-        <section v-if="upcomingCountdowns.length" class="ws-card daily-panel compact">
+        <section class="ws-card daily-panel compact">
           <header class="dp-head">
             <h2 class="dp-title">近期倒数日</h2>
             <button
               type="button"
               class="dp-link-btn"
-              @click="openEditor({ mode: 'new', start: selectedDate })"
+              @click="emit('openCountdowns')"
             >
-              + 详情新建
+              管理 / +
             </button>
           </header>
-          <div class="dp-cd-list">
+          <div v-if="upcomingCountdowns.length" class="dp-cd-list">
             <div
               v-for="c in upcomingCountdowns"
               :key="c.key"
               class="dp-cd-row"
-              @click="c.taskId ? emit('openTask', c.taskId, c.date) : selectDate(c.date)"
+              @click="c.custom ? emit('openCountdowns') : c.taskId ? emit('openTask', c.taskId, c.date) : selectDate(c.date)"
             >
               <span class="dp-cd-name">{{ c.label }}</span>
-              <span class="dp-cd-days">{{ c.days === 0 ? '今天' : `${c.days} 天` }}</span>
+              <span class="dp-cd-days">
+                {{ c.mode === 'up' ? (c.days === 0 ? '今日起算' : `已 ${c.days} 天`) : c.days === 0 ? '今天' : `${c.days} 天` }}
+              </span>
             </div>
           </div>
+          <div v-else class="dp-empty">暂无近期倒数日，点击右上角添加自定义倒数或纪念日。</div>
         </section>
       </div>
     </div>
+    </template>
   </div>
 </template>
 
@@ -432,8 +577,21 @@ onBeforeUnmount(() => {
   padding: 2px 4px;
 }
 
+.daily-timeline-card :deep(.day-head) {
+  padding: 6px 12px 4px;
+  min-height: 30px;
+}
+
+.daily-timeline-card :deep(.day-title) {
+  display: none;
+}
+
+.daily-timeline-card :deep(.day-head-main) {
+  gap: 0;
+}
+
 .daily-side {
-  width: 344px;
+  width: clamp(280px, 31%, 352px);
   flex: none;
   min-height: 0;
   overflow-y: auto;
@@ -441,6 +599,107 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 10px;
   padding-right: 2px;
+}
+
+.dp-pane-switch {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3px;
+  padding: 3px;
+  border-radius: 12px;
+  background: var(--ws-stone-pill);
+}
+
+.dp-sw-pill {
+  border-radius: 9px;
+  background: var(--ws-card-bg);
+  box-shadow: var(--ws-shadow-sm);
+}
+
+.dp-sw-btn {
+  position: relative;
+  z-index: 1;
+  height: 30px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ws-ink-secondary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: color 140ms ease;
+}
+
+.dp-sw-btn.active {
+  color: var(--ws-ink);
+  font-weight: 650;
+}
+
+.daily-grid.stacked {
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.daily-grid.stacked .daily-timeline-card {
+  min-height: 0;
+  flex: 1;
+}
+
+.daily-grid.stacked .daily-side {
+  width: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  flex: 1;
+  padding-right: 0;
+}
+
+.ws-daily.phone .daily-top {
+  padding: 2px 2px 0;
+  gap: 8px;
+}
+
+.ws-daily.phone .daily-date-title {
+  font-size: 24px;
+}
+
+.ws-daily.phone .week-strip {
+  padding: 4px;
+  gap: 3px;
+}
+
+.ws-daily.phone .week-day-btn {
+  padding: 4px 2px;
+}
+
+.ws-daily.phone .daily-grid.stacked .daily-side {
+  padding-bottom: calc(92px + env(safe-area-inset-bottom));
+}
+
+.ws-daily.phone .daily-grid.stacked .daily-timeline-card {
+  margin-bottom: calc(74px + env(safe-area-inset-bottom));
+}
+
+.dp-more-btn {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ws-ink-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.dp-more-btn:active {
+  background: var(--ws-stone-pill);
+  color: var(--ws-ink);
 }
 
 .daily-panel {
@@ -535,17 +794,43 @@ onBeforeUnmount(() => {
   font-variant-numeric: tabular-nums;
 }
 
-.dp-chip.progress {
-  background: rgba(181, 71, 13, 0.12);
-  color: #9A3B08;
+.dp-chip.in_progress {
+  background: var(--ws-pill-progress-bg);
+  color: var(--ws-pill-progress-ink);
 }
 
-.dp-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  margin-top: 6px;
+.dp-chip.in_review {
+  background: var(--ws-pill-review-bg);
+  color: var(--ws-pill-review-ink);
+}
+
+.dp-glyph-btn {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  margin-top: 1px;
+  border: 0;
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
   flex: none;
+}
+
+.dp-item-trail {
+  margin-top: 2px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+}
+
+.dp-focus-title-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
 }
 
 .dp-empty {
