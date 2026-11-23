@@ -21,6 +21,7 @@ const props = defineProps<{
   weekNo?: number;
   dropDate?: ISODate;
   draggingKey?: string;
+  selectRange?: { start: ISODate; end: ISODate } | null;
 }>();
 
 const emit = defineEmits<{
@@ -29,6 +30,7 @@ const emit = defineEmits<{
   chipMenu: [c: Chip, e: MouseEvent];
   chipDown: [c: Chip, e: PointerEvent];
   chipKey: [c: Chip, e: KeyboardEvent];
+  cellDown: [date: ISODate, e: PointerEvent];
   cellMenu: [date: ISODate, e: MouseEvent];
   more: [date: ISODate, el: HTMLElement];
 }>();
@@ -89,7 +91,9 @@ function onCellDblClick(date: ISODate) {
 let cellTouchTimer: ReturnType<typeof setTimeout> | undefined;
 let cellTouchOrigin: { x: number; y: number } | null = null;
 function onCellPointerDown(date: ISODate, e: PointerEvent) {
-  if (e.pointerType !== 'touch' || (e.target as HTMLElement).closest('.chip, button, input')) return;
+  if ((e.target as HTMLElement).closest('.chip, .more, button, input')) return;
+  emit('cellDown', date, e);
+  if (e.pointerType !== 'touch') return;
   cellTouchOrigin = { x: e.clientX, y: e.clientY };
   clearTimeout(cellTouchTimer);
   const cx = e.clientX;
@@ -125,7 +129,7 @@ function clearCellTouch() {
           :tabindex="ui.selected === c.date ? 0 : -1"
           :aria-selected="ui.selected === c.date"
           :aria-describedby="`desc-${c.date}`"
-          :class="{ rest: c.rest, today: c.today, 'today-fill': c.today && (parseRgba(doc.settings.desk.todayFillColor)?.[3] ?? 0) > 0, dim: c.dim, marked: !!c.mark, drop: dropDate === c.date, flash: ui.flash && c.date >= ui.flash && c.date <= ui.flashEnd }"
+          :class="{ rest: c.rest, today: c.today, 'today-fill': c.today && (parseRgba(doc.settings.desk.todayFillColor)?.[3] ?? 0) > 0, dim: c.dim, marked: !!c.mark, drop: dropDate === c.date, selecting: !!selectRange && c.date >= selectRange.start && c.date <= selectRange.end, flash: ui.flash && c.date >= ui.flash && c.date <= ui.flashEnd }"
           :style="c.mark ? { '--mark': c.mark } : undefined"
           @click="ui.selected = c.date"
           @dblclick="onCellDblClick(c.date)"
@@ -218,6 +222,7 @@ function clearCellTouch() {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: var(--cell-gap);
+  touch-action: none;
 }
 .cell {
   position: relative;
@@ -256,6 +261,10 @@ function clearCellTouch() {
 }
 .cell.drop {
   box-shadow: inset 0 0 0 2px var(--accent-fill);
+}
+.cell.selecting {
+  box-shadow: inset 0 0 0 2px var(--accent-fill);
+  background: color-mix(in srgb, var(--accent-fill) 22%, var(--cell-bg));
 }
 .cell.flash {
   box-shadow: inset 0 0 0 2px var(--accent-fill);

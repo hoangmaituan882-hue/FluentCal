@@ -3,7 +3,7 @@ import { t as tr } from '@/i18n';
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { TASK_COLORS } from '@/fluent';
 import type { ISODate } from '@/types';
-import { addDays, addMonths, diffDays, formatYMD, isoWeek, monthWeeks, parts, startOfMonth, weekday, WEEKDAY_SHORT } from '@/lib/date';
+import { addDays, addMonths, diffDays, formatRange, formatYMD, isoWeek, monthWeeks, parts, startOfMonth, weekday, WEEKDAY_SHORT } from '@/lib/date';
 import { almanac, displayInfo as dayInfo } from '@/lib/lunar';
 import { occurrences, type Occurrence } from '@/lib/recur';
 import { layoutWeek, type Chip } from '@/lib/layout';
@@ -187,6 +187,67 @@ function onDragKey(e: KeyboardEvent) {
   }
 }
 
+// Press, drag across days, and release to create a multi-day task with exact start/end.
+const createDrag = reactive({ active: false, anchor: '' as ISODate, current: '' as ISODate, x: 0, y: 0 });
+let createSession: { anchor: ISODate; id: number } | null = null;
+const selectRange = computed(() => {
+  if (!createDrag.active || !createDrag.anchor || !createDrag.current) return null;
+  const start = createDrag.anchor <= createDrag.current ? createDrag.anchor : createDrag.current;
+  const end = createDrag.anchor <= createDrag.current ? createDrag.current : createDrag.anchor;
+  return { start, end };
+});
+const createLabel = computed(() => {
+  const r = selectRange.value;
+  if (!r) return '';
+  const days = diffDays(r.start, r.end) + 1;
+  return `${formatRange(r.start, r.end)} · 共 ${days} 天`;
+});
+
+function cellDown(date: ISODate, e: PointerEvent) {
+  if (e.button !== 0 || storeState.readOnly || !doc.settings.desk.locked || ds) return;
+  createSession = { anchor: date, id: e.pointerId };
+  window.addEventListener('pointermove', onCreateMove);
+  window.addEventListener('pointerup', onCreateUp);
+  window.addEventListener('pointercancel', endCreateDrag);
+  window.addEventListener('keydown', onCreateKey, true);
+}
+
+function onCreateMove(e: PointerEvent) {
+  if (!createSession || e.pointerId !== createSession.id) return;
+  const at = dateAt(e.clientX, e.clientY);
+  if (!createDrag.active) {
+    if (!at || at === createSession.anchor) return;
+    createDrag.active = true;
+    createDrag.anchor = createSession.anchor;
+  }
+  if (at) createDrag.current = at;
+  createDrag.x = e.clientX;
+  createDrag.y = e.clientY;
+}
+
+function endCreateDrag() {
+  window.removeEventListener('pointermove', onCreateMove);
+  window.removeEventListener('pointerup', onCreateUp);
+  window.removeEventListener('pointercancel', endCreateDrag);
+  window.removeEventListener('keydown', onCreateKey, true);
+  Object.assign(createDrag, { active: false, anchor: '', current: '' });
+  createSession = null;
+}
+
+function onCreateUp(e: PointerEvent) {
+  if (!createSession || e.pointerId !== createSession.id) return;
+  const range = selectRange.value;
+  endCreateDrag();
+  if (range) openEditor({ mode: 'new', start: range.start, end: range.end });
+}
+
+function onCreateKey(e: KeyboardEvent) {
+  if (e.key === 'Escape' && createDrag.active) {
+    e.stopPropagation();
+    endCreateDrag();
+  }
+}
+
 // ---------------------------------------------------------------- grid keyboard, wheel
 
 function select(d: ISODate) {
@@ -249,6 +310,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   ro?.disconnect();
   endDrag();
+  endCreateDrag();
 });
 watch(
   () => [weeks.value.length, doc.settings.desk.cellGap],
@@ -283,17 +345,22 @@ watch(
         :week-no="weekNos[i]"
         :drop-date="drag.over"
         :dragging-key="drag.key"
+        :select-range="selectRange"
         @chip-toggle="toggle"
         @chip-open="open"
         @chip-menu="menu"
         @chip-down="chipDown"
         @chip-key="chipKey"
+        @cell-down="cellDown"
         @cell-menu="(d, e) => cellMenu(d, { x: e.clientX, y: e.clientY })"
         @more="onMore"
       />
     </div>
     <div v-if="drag.active" class="ghost" :style="{ left: `${drag.x + 12}px`, top: `${drag.y + 10}px` }">
       {{ drag.label }}
+    </div>
+    <div v-else-if="createDrag.active" class="ghost" :style="{ left: `${createDrag.x + 12}px`, top: `${createDrag.y + 10}px` }">
+      {{ createLabel }}
     </div>
     <DayListFlyout v-model:open="moreOpen" :date="moreDate" :anchor="moreAnchor" />
   </div>
