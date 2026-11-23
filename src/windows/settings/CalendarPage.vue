@@ -32,7 +32,7 @@ const order = [1, 2, 3, 4, 5, 6, 0];
   <div class="page">
     <FSettingsGroup title="视图">
       <FSettingsCard icon="calendar" title="默认视图">
-        <FSelect v-model="view" :width="150" :options="[{ value: 'month', label: '月视图' }, { value: 'weeks', label: '多周视图' }, { value: 'gantt', label: '甘特图' }]" />
+        <FSelect v-model="view" :width="150" :options="[{ value: 'day', label: '日视图' }, { value: 'multiday', label: '多日视图' }, { value: 'month', label: '月视图' }, { value: 'weeks', label: '多周视图' }, { value: 'gantt', label: '甘特图' }]" />
       </FSettingsCard>
       <FSettingsCard icon="calendarWeek" title="每周的第一天">
         <FSelect v-model="weekStart" :width="150" :options="[{ value: 1, label: '星期一' }, { value: 0, label: '星期日' }]" />

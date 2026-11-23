@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { t as tr } from '@/i18n';
 import { computed, nextTick, ref, watch } from 'vue';
-import { vTip } from '@/fluent';
+import { taskColor, vTip } from '@/fluent';
 import type { ISODate } from '@/types';
-import type { Chip, WeekLayout } from '@/lib/layout';
+import type { Chip, DraftChip, WeekLayout } from '@/lib/layout';
 import { isServer } from '@/api';
 import { addTask } from '@/lib/tasks';
 import { doc, storeState } from '@/stores/doc';
+import { isDark } from '@/composables/theme';
 import { notify, ui } from './state';
 import type { CellInfo } from './types';
 import TaskChip from './TaskChip.vue';
@@ -21,7 +22,9 @@ const props = defineProps<{
   weekNo?: number;
   dropDate?: ISODate;
   draggingKey?: string;
-  selectRange?: { start: ISODate; end: ISODate } | null;
+  draftDays?: number;
+  draftDir?: 'forward' | 'backward';
+  reflow?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -53,6 +56,22 @@ function chipStyle(c: Chip) {
 function moreStyle(col: number) {
   return { top: `${props.headH + props.layout.overflowLane[col] * props.laneH}px`, height: `${props.chipH}px` };
 }
+
+function draftStyle(d: DraftChip) {
+  const l = d.contLeft ? 0 : 2;
+  const r = d.contRight ? 0 : 2;
+  return {
+    left: `calc(${d.col} * ((100% - 6 * var(--cell-gap)) / 7 + var(--cell-gap)) + ${l}px)`,
+    width: `calc(${d.span} * ((100% - 6 * var(--cell-gap)) / 7) + ${d.span - 1} * var(--cell-gap) - ${l + r}px)`,
+    top: `${props.headH + d.lane * props.laneH}px`,
+    height: `${props.chipH}px`,
+  };
+}
+
+const draftColors = computed(() => {
+  const c = taskColor(undefined, isDark.value);
+  return { '--bar': c.bar, '--on-bar': c.onBar };
+});
 
 // Quick add: an inline box at the bottom of the day cell; stays open for the next entry.
 const qaText = ref('');
@@ -116,7 +135,7 @@ function clearCellTouch() {
 </script>
 
 <template>
-  <div ref="root" class="row" role="row">
+  <div ref="root" class="row" :class="{ reflow }" role="row">
     <div v-if="weekNo !== undefined" class="weekno" aria-hidden="true">{{ weekNo }}</div>
     <div class="area">
       <div class="cells">
@@ -129,7 +148,7 @@ function clearCellTouch() {
           :tabindex="ui.selected === c.date ? 0 : -1"
           :aria-selected="ui.selected === c.date"
           :aria-describedby="`desc-${c.date}`"
-          :class="{ rest: c.rest, today: c.today, 'today-fill': c.today && (parseRgba(doc.settings.desk.todayFillColor)?.[3] ?? 0) > 0, dim: c.dim, marked: !!c.mark, drop: dropDate === c.date, selecting: !!selectRange && c.date >= selectRange.start && c.date <= selectRange.end, flash: ui.flash && c.date >= ui.flash && c.date <= ui.flashEnd }"
+          :class="{ rest: c.rest, today: c.today, 'today-fill': c.today && (parseRgba(doc.settings.desk.todayFillColor)?.[3] ?? 0) > 0, dim: c.dim, marked: !!c.mark, drop: dropDate === c.date, flash: ui.flash && c.date >= ui.flash && c.date <= ui.flashEnd }"
           :style="c.mark ? { '--mark': c.mark } : undefined"
           @click="ui.selected = c.date"
           @dblclick="onCellDblClick(c.date)"
@@ -189,6 +208,23 @@ function clearCellTouch() {
             @keydown.esc.prevent="qaClose"
             @blur="qaClose"
           />
+        </div>
+      </div>
+      <div
+        v-if="layout.draft"
+        class="draft-slot"
+        :class="{ floating: layout.draft.floating, backward: draftDir === 'backward' }"
+        :style="[draftStyle(layout.draft), draftColors]"
+        aria-hidden="true"
+      >
+        <div class="draft-bar" :class="{ 'cont-l': layout.draft.contLeft, 'cont-r': layout.draft.contRight }">
+          <span v-if="!layout.draft.contLeft && draftDir === 'backward'" class="draft-handle left" aria-hidden="true" />
+          <template v-if="!layout.draft.contLeft">
+            <span class="draft-plus" aria-hidden="true">+</span>
+            <span class="draft-title">新建事项</span>
+            <span v-if="draftDays" class="draft-badge">{{ draftDays }} 天</span>
+          </template>
+          <span v-if="!layout.draft.contRight && draftDir !== 'backward'" class="draft-handle right" aria-hidden="true" />
         </div>
       </div>
     </div>
@@ -261,10 +297,6 @@ function clearCellTouch() {
 }
 .cell.drop {
   box-shadow: inset 0 0 0 2px var(--accent-fill);
-}
-.cell.selecting {
-  box-shadow: inset 0 0 0 2px var(--accent-fill);
-  background: color-mix(in srgb, var(--accent-fill) 22%, var(--cell-bg));
 }
 .cell.flash {
   box-shadow: inset 0 0 0 2px var(--accent-fill);
@@ -433,5 +465,111 @@ function clearCellTouch() {
 }
 .cell:has(.badge) .cell-add {
   margin-right: 18px;
+}
+.row.reflow .slot,
+.row.reflow .more {
+  transition:
+    top 180ms cubic-bezier(0.2, 0, 0, 1),
+    opacity 140ms var(--ease);
+}
+.draft-slot {
+  position: absolute;
+  z-index: 4;
+  pointer-events: none;
+  transition:
+    top 180ms cubic-bezier(0.2, 0, 0, 1),
+    left 130ms cubic-bezier(0.2, 0, 0, 1),
+    width 130ms cubic-bezier(0.2, 0, 0, 1);
+}
+.draft-slot.floating {
+  z-index: 6;
+}
+.draft-bar {
+  position: relative;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px 0 5px;
+  border-radius: 4px;
+  font-size: calc(12px * var(--fs));
+  line-height: 1;
+  background: color-mix(in srgb, var(--bar) 92%, transparent);
+  color: var(--on-bar);
+  text-shadow: none;
+  overflow: hidden;
+  white-space: nowrap;
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--on-bar) 26%, transparent),
+    0 3px 10px color-mix(in srgb, var(--bar) 30%, rgba(0, 0, 0, 0.22));
+  transform-origin: left center;
+  animation: draft-pop 140ms var(--ease) both;
+}
+.draft-slot.backward .draft-bar {
+  transform-origin: right center;
+  padding-left: 10px;
+}
+.draft-bar:has(.draft-handle.right) {
+  padding-right: 10px;
+}
+.draft-slot.floating .draft-bar {
+  background: var(--bar);
+  box-shadow:
+    0 0 0 1.5px var(--solid-base),
+    var(--shadow-flyout);
+}
+.draft-bar.cont-l {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+.draft-bar.cont-r {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.draft-plus {
+  flex: none;
+  font-weight: 700;
+  font-size: calc(13px * var(--fs));
+  line-height: 1;
+  opacity: 0.92;
+}
+.draft-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
+}
+.draft-badge {
+  margin-left: auto;
+  font-size: calc(10.5px * var(--fs));
+  opacity: 0.92;
+  font-variant-numeric: tabular-nums;
+  flex: none;
+  padding-right: 4px;
+}
+.draft-handle {
+  position: absolute;
+  top: 21%;
+  width: 3px;
+  height: 58%;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--on-bar) 85%, transparent);
+}
+.draft-handle.left {
+  left: 3px;
+}
+.draft-handle.right {
+  right: 3px;
+}
+@keyframes draft-pop {
+  from {
+    opacity: 0;
+    transform: scaleX(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: scaleX(1);
+  }
 }
 </style>

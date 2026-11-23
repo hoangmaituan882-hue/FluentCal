@@ -38,7 +38,10 @@ export function saveTask(t: Task): Promise<void> {
   const old = doc.tasks[t.id];
   // A renamed sample task is the user's own now: "清除示例数据" must not take it.
   const own = t.sample && old && old.title !== t.title;
-  return put('tasks', { [t.id]: { ...stampDone(old, t, today()), sample: own ? undefined : t.sample, updatedAt: Date.now() } });
+  const next: Task = { ...stampDone(old, t, today()), sample: own ? undefined : t.sample, updatedAt: Date.now() };
+  if (next.done && next.status && next.status !== 'done') next.status = 'done';
+  else if (!next.done && next.status === 'done') delete next.status;
+  return put('tasks', { [t.id]: next });
 }
 
 export function addTask(p: Partial<Task> & { title: string; start: ISODate }): Promise<Task> {
@@ -68,7 +71,12 @@ export function setOccurrenceDone(t: Task, date: ISODate, done: boolean): Promis
     else set.delete(date);
     return saveTask({ ...t, doneDates: [...set].sort() });
   }
-  return saveTask({ ...t, done, progress: done ? 100 : t.progress === 100 ? 0 : t.progress });
+  return saveTask({
+    ...t,
+    done,
+    status: done ? 'done' : t.status === 'done' ? undefined : t.status,
+    progress: done ? 100 : t.progress === 100 ? 0 : t.progress,
+  });
 }
 
 export function setProgress(t: Task, progress: number): Promise<void> {

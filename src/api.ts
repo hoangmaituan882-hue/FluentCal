@@ -72,6 +72,9 @@ export const currentWindow = {
   hide: () => (isTauri ? getCurrentWebviewWindow().hide() : Promise.resolve()),
   show: () => (isTauri ? getCurrentWebviewWindow().show() : Promise.resolve()),
   focus: () => (isTauri ? getCurrentWebviewWindow().setFocus() : Promise.resolve(window.focus())),
+  minimize: () => (isTauri ? getCurrentWebviewWindow().minimize() : Promise.resolve()),
+  toggleMaximize: () => (isTauri ? getCurrentWebviewWindow().toggleMaximize() : Promise.resolve()),
+  isMaximized: () => (isTauri ? getCurrentWebviewWindow().isMaximized() : Promise.resolve(false)),
   setTheme: (dark: boolean) =>
     isTauri ? getCurrentWebviewWindow().setTheme(dark ? 'dark' : 'light') : Promise.resolve(),
   setTitle: (t: string) => (isTauri ? getCurrentWebviewWindow().setTitle(t) : Promise.resolve(void (document.title = t))),
@@ -227,6 +230,9 @@ const mock = (() => {
         break;
       case 'editor_open':
         window.open(`?w=editor&payload=${encodeURIComponent(JSON.stringify(a.payload))}`, 'fluentcal-editor', 'width=560,height=720');
+        break;
+      case 'workspace_open':
+        window.open('?w=workspace', 'fluentcal-workspace', 'width=1360,height=860');
         break;
       case 'app_info': {
         const t = query.get('theme');

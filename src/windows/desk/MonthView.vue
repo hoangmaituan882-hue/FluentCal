@@ -60,7 +60,11 @@ const capacity = computed(() =>
 );
 const layouts = computed(() =>
   weeks.value.map((w) =>
-    layoutWeek(w, occs.value, { capacity: capacity.value, completedLast: doc.settings.tasks.completedLast }),
+    layoutWeek(w, occs.value, {
+      capacity: capacity.value,
+      completedLast: doc.settings.tasks.completedLast,
+      draft: selectRange.value ?? undefined,
+    }),
   ),
 );
 
@@ -188,24 +192,40 @@ function onDragKey(e: KeyboardEvent) {
 }
 
 // Press, drag across days, and release to create a multi-day task with exact start/end.
-const createDrag = reactive({ active: false, anchor: '' as ISODate, current: '' as ISODate, x: 0, y: 0 });
-let createSession: { anchor: ISODate; id: number } | null = null;
+const createDrag = reactive({
+  active: false,
+  anchor: '' as ISODate,
+  current: '' as ISODate,
+  dir: 'forward' as 'forward' | 'backward',
+  x: 0,
+  y: 0,
+});
+let createSession: { anchor: ISODate; x: number; y: number; id: number; isTouch: boolean } | null = null;
+const reflowing = ref(false);
+let reflowTimer: ReturnType<typeof setTimeout> | undefined;
 const selectRange = computed(() => {
   if (!createDrag.active || !createDrag.anchor || !createDrag.current) return null;
   const start = createDrag.anchor <= createDrag.current ? createDrag.anchor : createDrag.current;
   const end = createDrag.anchor <= createDrag.current ? createDrag.current : createDrag.anchor;
   return { start, end };
 });
+const draftDays = computed(() => (selectRange.value ? diffDays(selectRange.value.start, selectRange.value.end) + 1 : 0));
 const createLabel = computed(() => {
   const r = selectRange.value;
   if (!r) return '';
-  const days = diffDays(r.start, r.end) + 1;
-  return `${formatRange(r.start, r.end)} · 共 ${days} 天`;
+  return `${formatRange(r.start, r.end)} · 共 ${draftDays.value} 天`;
+});
+const createPillStyle = computed(() => {
+  const vw = typeof window !== 'undefined' ? window.innerWidth : 1200;
+  return {
+    left: `${Math.max(8, Math.min(vw - 210, createDrag.x + 12))}px`,
+    top: `${Math.max(8, createDrag.y - 36)}px`,
+  };
 });
 
 function cellDown(date: ISODate, e: PointerEvent) {
   if (e.button !== 0 || storeState.readOnly || !doc.settings.desk.locked || ds) return;
-  createSession = { anchor: date, id: e.pointerId };
+  createSession = { anchor: date, x: e.clientX, y: e.clientY, id: e.pointerId, isTouch: e.pointerType === 'touch' };
   window.addEventListener('pointermove', onCreateMove);
   window.addEventListener('pointerup', onCreateUp);
   window.addEventListener('pointercancel', endCreateDrag);
@@ -216,11 +236,25 @@ function onCreateMove(e: PointerEvent) {
   if (!createSession || e.pointerId !== createSession.id) return;
   const at = dateAt(e.clientX, e.clientY);
   if (!createDrag.active) {
-    if (!at || at === createSession.anchor) return;
+    const threshold = createSession.isTouch ? 14 : 12;
+    const movedEnough = Math.hypot(e.clientX - createSession.x, e.clientY - createSession.y) >= threshold;
+    if ((!at || at === createSession.anchor) && !movedEnough) return;
+    clearTimeout(reflowTimer);
+    reflowing.value = true;
     createDrag.active = true;
     createDrag.anchor = createSession.anchor;
+    createDrag.current = at ?? createSession.anchor;
+  } else if (at) {
+    createDrag.current = at;
   }
-  if (at) createDrag.current = at;
+  createDrag.dir =
+    createDrag.current !== createDrag.anchor
+      ? createDrag.current < createDrag.anchor
+        ? 'backward'
+        : 'forward'
+      : e.clientX < createSession.x
+        ? 'backward'
+        : 'forward';
   createDrag.x = e.clientX;
   createDrag.y = e.clientY;
 }
@@ -230,8 +264,14 @@ function endCreateDrag() {
   window.removeEventListener('pointerup', onCreateUp);
   window.removeEventListener('pointercancel', endCreateDrag);
   window.removeEventListener('keydown', onCreateKey, true);
-  Object.assign(createDrag, { active: false, anchor: '', current: '' });
+  Object.assign(createDrag, { active: false, anchor: '', current: '', dir: 'forward' });
   createSession = null;
+  clearTimeout(reflowTimer);
+  if (reflowing.value) {
+    reflowTimer = setTimeout(() => {
+      reflowing.value = false;
+    }, 220);
+  }
 }
 
 function onCreateUp(e: PointerEvent) {
@@ -280,7 +320,7 @@ function onGridKey(e: KeyboardEvent) {
 let wheelAcc = 0;
 let wheelAt = 0;
 function onWheel(e: WheelEvent) {
-  if (e.ctrlKey || drag.active) return;
+  if (e.ctrlKey || drag.active || createDrag.active) return;
   wheelAcc += e.deltaY;
   const t = performance.now();
   if (Math.abs(wheelAcc) >= 50 && t - wheelAt > 200) {
@@ -311,6 +351,7 @@ onBeforeUnmount(() => {
   ro?.disconnect();
   endDrag();
   endCreateDrag();
+  clearTimeout(reflowTimer);
 });
 watch(
   () => [weeks.value.length, doc.settings.desk.cellGap],
@@ -319,7 +360,7 @@ watch(
 </script>
 
 <template>
-  <div class="month" @wheel.passive="onWheel">
+  <div class="month" :class="{ creating: createDrag.active }" @wheel.passive="onWheel">
     <div class="weekdays" aria-hidden="true">
       <span v-if="cal.showWeekNumbers" class="wn">{{ tr("周") }}</span>
       <div class="wd-grid">
@@ -345,7 +386,9 @@ watch(
         :week-no="weekNos[i]"
         :drop-date="drag.over"
         :dragging-key="drag.key"
-        :select-range="selectRange"
+        :draft-days="draftDays"
+        :draft-dir="createDrag.dir"
+        :reflow="reflowing"
         @chip-toggle="toggle"
         @chip-open="open"
         @chip-menu="menu"
@@ -359,7 +402,7 @@ watch(
     <div v-if="drag.active" class="ghost" :style="{ left: `${drag.x + 12}px`, top: `${drag.y + 10}px` }">
       {{ drag.label }}
     </div>
-    <div v-else-if="createDrag.active" class="ghost" :style="{ left: `${createDrag.x + 12}px`, top: `${createDrag.y + 10}px` }">
+    <div v-else-if="createDrag.active" class="create-pill" :style="createPillStyle">
       {{ createLabel }}
     </div>
     <DayListFlyout v-model:open="moreOpen" :date="moreDate" :anchor="moreAnchor" />
@@ -373,6 +416,10 @@ watch(
   display: flex;
   flex-direction: column;
   gap: var(--cell-gap);
+}
+.month.creating {
+  user-select: none;
+  cursor: ew-resize;
 }
 .weekdays {
   display: flex;
@@ -420,5 +467,21 @@ watch(
   overflow: hidden;
   text-overflow: ellipsis;
   box-shadow: var(--shadow-flyout);
+}
+.create-pill {
+  position: fixed;
+  z-index: 50;
+  pointer-events: none;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: var(--flyout-fill);
+  backdrop-filter: blur(20px);
+  border: 1px solid var(--card-stroke);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  box-shadow: var(--shadow-flyout);
+  --text-glow: none;
 }
 </style>

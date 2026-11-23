@@ -8,6 +8,7 @@ import { doc, groupList, initStore } from '@/stores/doc';
 import { startThemeSync } from '@/composables/theme';
 import { addDays, diffDays, today } from '@/lib/date';
 import { dayInfo } from '@/lib/lunar';
+import { formatMinToHHMM, parseTimeMin } from '@/lib/dayLayout';
 import { deleteOccurrence, deleteTask, makeGroup, makeTask, saveGroup, saveTask } from '@/lib/tasks';
 import { mergeEdit } from '@/lib/merge';
 import RepeatEditor from './RepeatEditor.vue';
@@ -16,7 +17,9 @@ import DepsEditor from './DepsEditor.vue';
 import '../window-shell.css';
 import './editor.css';
 
-type Payload = { mode: 'edit'; taskId: string; date?: string } | { mode: 'new'; start?: string; end?: string; groupId?: string; title?: string; milestone?: boolean };
+type Payload =
+  | { mode: 'edit'; taskId: string; date?: string }
+  | { mode: 'new'; start?: string; end?: string; time?: string; duration?: number; groupId?: string; title?: string; milestone?: boolean };
 
 const props = defineProps<{ embedded?: boolean; initialPayload?: Payload | null }>();
 const emit = defineEmits<{ close: [] }>();
@@ -46,7 +49,15 @@ function load(p: Payload | null) {
     occDate.value = p.date ?? t?.start ?? '';
   } else {
     const start = p?.start ?? today();
-    draft.value = makeTask({ title: p?.title ?? '', start, end: p?.end ?? start, groupId: p?.groupId, milestone: p?.milestone || undefined });
+    draft.value = makeTask({
+      title: p?.title ?? '',
+      start,
+      end: p?.end ?? start,
+      time: p?.time,
+      duration: p?.duration,
+      groupId: p?.groupId,
+      milestone: p?.milestone || undefined,
+    });
     isNew.value = true;
     occDate.value = start;
   }
@@ -122,8 +133,47 @@ const start = computed({
   },
 });
 const end = computed({ get: () => draft.value?.end ?? '', set: (v: string) => draft.value && v && (draft.value.end = v < draft.value.start ? draft.value.start : v) });
-const allDay = computed({ get: () => !draft.value?.time, set: (v: boolean) => draft.value && (draft.value.time = v ? undefined : '09:00') });
+const allDay = computed({
+  get: () => !draft.value?.time,
+  set: (v: boolean) => {
+    if (!draft.value) return;
+    if (v) {
+      draft.value.time = undefined;
+      draft.value.duration = undefined;
+    } else {
+      draft.value.time = draft.value.time || '09:00';
+      draft.value.duration = draft.value.duration ?? 60;
+    }
+  },
+});
 const time = computed({ get: () => draft.value?.time ?? '', set: (v: string) => draft.value && (draft.value.time = v || undefined) });
+const BASE_DURATIONS = [15, 30, 45, 60, 90, 120, 180, 240];
+function formatDurationZh(mins: number): string {
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  if (h === 0) return `${m} 分钟`;
+  if (m === 0) return `${h} 小时`;
+  if (m === 30) return `${h}.5 小时`;
+  return `${h} 小时 ${m} 分钟`;
+}
+const duration = computed({
+  get: () => String(draft.value?.duration ?? 60),
+  set: (v: string | number) => {
+    if (!draft.value) return;
+    draft.value.duration = Math.min(1440, Math.max(15, Number(v) || 60));
+  },
+});
+const durationOptions = computed(() => {
+  const cur = draft.value?.duration ?? 60;
+  const list = BASE_DURATIONS.includes(cur) ? BASE_DURATIONS : [...BASE_DURATIONS, cur].sort((a, b) => a - b);
+  return list.map((mins) => ({ value: String(mins), label: formatDurationZh(mins) }));
+});
+const endTimeHint = computed(() => {
+  if (!draft.value?.time) return '';
+  const startMin = parseTimeMin(draft.value.time);
+  const mins = draft.value.duration ?? 60;
+  return `至 ${formatMinToHHMM(Math.min(1440, startMin + mins))}`;
+});
 const notes = computed({ get: () => draft.value?.notes ?? '', set: (v: string) => draft.value && (draft.value.notes = v || undefined) });
 const color = computed({ get: () => draft.value?.color ?? '', set: (v: string) => draft.value && (draft.value.color = v || undefined) });
 const colors = TASK_COLORS.map((c) => ({ key: c.key, color: c.bar, label: c.label }));
@@ -216,6 +266,8 @@ watch(
             <div class="ctl">
               <FCheckbox v-model="allDay" label="全天" />
               <FTimePicker v-if="!allDay" v-model="time" :width="110" />
+              <FSelect v-if="!allDay" v-model="duration" :options="durationOptions" :width="124" />
+              <span v-if="!allDay && endTimeHint" class="hint">{{ endTimeHint }}</span>
             </div>
           </div>
           <div class="row top">

@@ -17,7 +17,7 @@ import {
   setDayMark,
   setOccurrenceDone,
 } from '@/lib/tasks';
-import { goToday, notify, openEditor, openInBrowser, openSettings, ui } from './state';
+import { goToday, notify, openEditor, openGanttTask, openInBrowser, openSettings, openWorkspace, ui } from './state';
 
 type At = Parameters<typeof showMenu>[1];
 
@@ -56,14 +56,11 @@ export function chipMenu(occ: Occurrence, at: At): Promise<void> {
         action: () => void saveTask({ ...t, autoPostpone: !(t.autoPostpone ?? doc.settings.tasks.autoPostpone) }),
       },
     { label: '倒数日', icon: 'flag', checked: !!t.countdown, action: () => void saveTask({ ...t, countdown: !t.countdown || undefined }) },
-    doc.settings.calendar.view !== 'gantt' &&
+    (ui.activeView || doc.settings.calendar.view) !== 'gantt' &&
       inGantt(t, { ...doc.settings.gantt }) && {
         label: '在甘特图中查看',
         icon: 'gantt',
-        action: () => {
-          ui.ganttFocus = t.id;
-          patchSettings({ calendar: { view: 'gantt' } });
-        },
+        action: () => openGanttTask(t.id),
       },
     { separator: true },
     t.repeat
@@ -114,6 +111,7 @@ export async function moreMenu(at: At): Promise<void> {
   const s = doc.settings;
   const screens = (await call<Screen[]>('screens_list').catch(() => null)) ?? [];
   const items: MenuItem[] = [
+    { label: '打开工作台', icon: 'window', action: openWorkspace },
     { label: '新建任务…', icon: 'add', shortcut: 'Ctrl+N', action: () => openEditor({ mode: 'new' }) },
     { label: '搜索', icon: 'search', shortcut: 'Ctrl+F', action: () => (ui.searchOpen = true) },
     ...(syncStatus.enabled ? [{ label: '立即同步', icon: 'sync', action: () => void syncNow() }] : []),

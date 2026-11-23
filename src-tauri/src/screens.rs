@@ -98,6 +98,36 @@ pub fn move_to(app: &AppHandle, index: usize) {
     save_home(app);
 }
 
+/// Expands or shrinks the desk window leftward to show/hide the external left sidebar
+/// while keeping the right main calendar card anchored in place.
+pub fn set_sidebar_width(app: &AppHandle, open: bool, delta_logical: f64) {
+    let Some(win) = app.get_webview_window("desk") else { return };
+    let Some(r) = rect_of(&win) else { return };
+    let all = mons(&win);
+    let mon_opt = layout::monitor_at(&all, r).and_then(|i| all.get(i));
+    let scale = mon_opt.map(|m| m.scale).unwrap_or(1.0);
+    let delta = (delta_logical.max(0.0) * scale).round() as u32;
+    if delta == 0 {
+        return;
+    }
+    let target = if open {
+        let max_w = mon_opt.map(|m| m.work.w).unwrap_or(u32::MAX);
+        let min_x = mon_opt.map(|m| m.work.x).unwrap_or(i32::MIN);
+        let new_w = r.w.saturating_add(delta).min(max_w);
+        let grew = new_w.saturating_sub(r.w) as i32;
+        let new_x = (r.x - grew).max(min_x);
+        Rect { x: new_x, y: r.y, w: new_w, h: r.h }
+    } else {
+        let min_w = (360.0 * scale).round() as u32;
+        let shrink = r.w.saturating_sub(min_w).min(delta);
+        Rect { x: r.x + shrink as i32, y: r.y, w: r.w - shrink, h: r.h }
+    };
+    if target != r {
+        place(&win, target);
+        save_home(app);
+    }
+}
+
 /// The user put the calendar somewhere (end of a drag or resize, "显示在"): remember the place
 /// and the screen it is on.
 pub fn save_home(app: &AppHandle) {

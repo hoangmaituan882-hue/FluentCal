@@ -121,7 +121,7 @@ function eventLines(t: Task, uidSuffix: string, start: string, end: string, grou
   if (t.time) {
     const hm = t.time.replace(':', '');
     lines.push(`DTSTART:${compact(start)}T${hm}00`);
-    if (start === end) lines.push('DURATION:PT1H');
+    if (start === end) lines.push(t.duration && t.duration !== 60 ? `DURATION:PT${Math.round(t.duration)}M` : 'DURATION:PT1H');
     else lines.push(`DTEND:${compact(end)}T${hm}00`);
   } else {
     lines.push(`DTSTART;VALUE=DATE:${compact(start)}`, `DTEND;VALUE=DATE:${compact(addDays(end, 1))}`);

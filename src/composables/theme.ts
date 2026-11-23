@@ -1,4 +1,4 @@
-import { computed, reactive, watch, watchEffect } from 'vue';
+import { computed, reactive, ref, watch, watchEffect } from 'vue';
 import { call, currentWindow, on, windowLabel, isMobile, type AppInfo } from '@/api';
 import { doc } from '@/stores/doc';
 import { applyTheme, bestMonochromeText, bestTextOn, contrast, deriveAccent } from '@/fluent/theme';
@@ -6,6 +6,13 @@ import { alpha, mixHex } from '@/lib/color';
 import { colorOpacity, compositeColor, opaqueColor, setColorOpacity } from '@/lib/rgba';
 
 export const sys = reactive<{ info: AppInfo | null }>({ info: null });
+
+const windowThemeOverride = ref<'light' | 'dark' | null>(null);
+
+/** Allows standalone windows (e.g. Workspace) to lock light or dark mode without altering desk settings. */
+export function setWindowThemeOverride(mode: 'light' | 'dark' | null): void {
+  windowThemeOverride.value = mode;
+}
 
 export async function refreshSystem(): Promise<void> {
   try {
@@ -16,6 +23,7 @@ export async function refreshSystem(): Promise<void> {
 }
 
 export const isDark = computed(() => {
+  if (windowThemeOverride.value !== null) return windowThemeOverride.value === 'dark';
   const m = doc.settings.theme.mode;
   if (m === 'dark') return true;
   if (m === 'light') return false;
@@ -61,7 +69,7 @@ export const deskVars = computed<Record<string, string>>(() => {
   const s = doc.settings.desk;
   const dark = isDark.value;
   const base = s.bgColor === 'auto' ? (dark ? '#202020' : '#F3F3F3') : s.bgColor;
-  const cell = mixHex(base, '#FFFFFF', dark ? 0.07 : 0.85);
+  const cell = !dark && s.bgColor.toUpperCase() === '#FAF8F3' ? '#F2EFE8' : mixHex(base, '#FFFFFF', dark ? 0.07 : 0.85);
   const opacity = colorOpacity(base);
   const underlay = dark ? '#202020' : '#F3F3F3';
   const deskSurface = compositeColor(alpha(base, s.bgOpacity / 100), underlay);
@@ -84,8 +92,17 @@ export const deskVars = computed<Record<string, string>>(() => {
   }).join(', ') : 'none';
   // Border and shadow fade out with the background so a transparent calendar has no frame.
   const k = Math.min(1, s.bgOpacity * opacity / 60);
+  const hasFrame = !!s.frameColor && s.frameColor !== 'auto' && !s.acrylic;
   return {
     '--desk-bg': alpha(base, s.bgOpacity / 100),
+    '--desk-frame-bg': hasFrame ? (dark ? '#272624' : s.frameColor) : 'transparent',
+    '--desk-frame-stroke': hasFrame ? (dark ? 'rgba(255,255,255,0.09)' : 'rgba(43,40,37,0.09)') : 'transparent',
+    '--desk-frame-shadow':
+      hasFrame && s.shadow
+        ? dark
+          ? '0 12px 32px rgba(0,0,0,0.45)'
+          : '0 10px 28px rgba(43,40,37,0.12), 0 1px 3px rgba(43,40,37,0.06)'
+        : 'none',
     '--desk-radius': s.acrylic ? '8px' : `${s.radius}px`,
     '--desk-pad': s.acrylic ? '0px' : s.shadow ? '10px' : '2px',
     '--calendar-font-family': ({
@@ -100,9 +117,18 @@ export const deskVars = computed<Record<string, string>>(() => {
     '--calendar-text-secondary': alpha(calendarText, 0.82),
     '--calendar-text-tertiary': alpha(calendarText, 0.66),
     '--calendar-outline': outline,
-    '--desk-stroke': dark ? `rgba(255,255,255,${(0.1 * k).toFixed(3)})` : `rgba(0,0,0,${(0.08 * k).toFixed(3)})`,
-    '--desk-shadow':
-      s.shadow && !s.acrylic && k > 0.05
+    '--desk-stroke': hasFrame
+      ? dark
+        ? 'rgba(255,255,255,0.08)'
+        : 'rgba(43,40,37,0.075)'
+      : dark
+        ? `rgba(255,255,255,${(0.1 * k).toFixed(3)})`
+        : `rgba(0,0,0,${(0.08 * k).toFixed(3)})`,
+    '--desk-shadow': hasFrame
+      ? dark
+        ? '0 1px 4px rgba(0,0,0,0.3)'
+        : '0 1px 3px rgba(43,40,37,0.04)'
+      : s.shadow && !s.acrylic && k > 0.05
         ? `0 4px 14px rgba(0,0,0,${(0.22 * k).toFixed(3)}), 0 0 2px rgba(0,0,0,${(0.12 * k).toFixed(3)})`
         : 'none',
     '--panel-bg': alpha(opaqueColor(base), Math.max(0.82, s.bgOpacity * opacity / 100)),

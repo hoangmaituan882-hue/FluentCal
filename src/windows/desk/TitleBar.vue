@@ -7,7 +7,7 @@ import { doc, patchSettings } from '@/stores/doc';
 import { now } from '@/composables/now';
 import type { CalendarView } from '@/types';
 import { isServer } from '@/api';
-import { goToday, openEditor, openSettings, page, ui, viewTitle } from './state';
+import { goToday, openEditor, openSettings, openWorkspace, page, ui, viewTitle } from './state';
 import { moreMenu } from './menus';
 import YearMonthPicker from './YearMonthPicker.vue';
 import { syncNow, syncStatus, watchSync } from '@/composables/sync';
@@ -17,6 +17,10 @@ watchSync();
 
 const view = computed(() => doc.settings.calendar.view);
 const locked = computed(() => doc.settings.desk.locked);
+const sidebarOpen = computed(() => doc.settings.desk.sidebarOpen);
+function toggleSidebar() {
+  patchSettings({ desk: { sidebarOpen: !sidebarOpen.value } });
+}
 
 const title = computed(viewTitle);
 
@@ -26,6 +30,8 @@ const todayTip = computed(() => {
 });
 
 const views = [
+  { value: 'day', label: '日', title: '单日视图' },
+  { value: 'multiday', label: '多日', title: '多日时间轴视图（2–7天自由缩放）' },
   { value: 'month', label: '月', title: '月视图' },
   { value: 'weeks', label: '多周', title: '多周视图（滚动显示最近几周）' },
   { value: 'gantt', label: '甘特', title: '甘特图' },
@@ -43,6 +49,15 @@ const pickerOpen = ref(false);
 <template>
   <header class="titlebar" :class="{ movable: !locked }">
     <div class="left">
+      <FButton
+        variant="subtle"
+        size="icon"
+        icon="sidebar"
+        foreground="var(--calendar-text)"
+        :pressed="sidebarOpen"
+        title="显示或隐藏左侧边栏"
+        @click="toggleSidebar"
+      />
       <button
         v-if="view === 'month'"
         ref="titleBtn"
@@ -57,8 +72,8 @@ const pickerOpen = ref(false);
       </button>
       <span v-else class="title static">{{ title }}</span>
       <template v-if="view !== 'gantt'">
-        <FButton variant="subtle" size="icon" icon="chevronLeft" foreground="var(--calendar-text)" :title="view === 'weeks' ? '上一周' : '上个月'" @click="page(-1)" />
-        <FButton variant="subtle" size="icon" icon="chevronRight" foreground="var(--calendar-text)" :title="view === 'weeks' ? '下一周' : '下个月'" @click="page(1)" />
+        <FButton variant="subtle" size="icon" icon="chevronLeft" foreground="var(--calendar-text)" :title="view === 'day' ? '上一天' : view === 'multiday' ? '上一组日期' : view === 'weeks' ? '上一周' : '上个月'" @click="page(-1)" />
+        <FButton variant="subtle" size="icon" icon="chevronRight" foreground="var(--calendar-text)" :title="view === 'day' ? '下一天' : view === 'multiday' ? '下一组日期' : view === 'weeks' ? '下一周' : '下个月'" @click="page(1)" />
         <FButton class="today-btn" variant="subtle" size="small" foreground="var(--calendar-text)" v-tip="todayTip" @click="goToday">今天</FButton>
       </template>
     </div>
@@ -95,6 +110,7 @@ const pickerOpen = ref(false);
         :title="locked ? '解锁以调整位置和大小' : '完成调整并锁定'"
         @click="patchSettings({ desk: { locked: !locked } })"
       />
+      <FButton variant="subtle" size="icon" icon="window" foreground="var(--calendar-text)" title="打开完整工作台" @click="openWorkspace()" />
       <FButton class="settings-btn" variant="subtle" size="icon" icon="settings" foreground="var(--calendar-text)" title="设置" @click="openSettings()" />
       <FButton variant="subtle" size="icon" icon="more" foreground="var(--calendar-text)" title="更多" @click="(e: MouseEvent) => moreMenu(e.currentTarget as HTMLElement)" />
     </div>

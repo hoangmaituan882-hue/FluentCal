@@ -1,0 +1,417 @@
+/* Folio Warm Light Mode tokens & base layout rules for Workspace window.
+   A matching [data-ws-theme='dark'] hook is prepared for future dark mode support. */
+
+html[data-window='workspace'] {
+  --ws-stage-bg: #EFEEEA;
+  --ws-sidebar-bg: #FAF9F6;
+  --ws-card-bg: #FFFFFF;
+  --ws-card-subtle: #F5F4F0;
+  --ws-card-hover: #F7F6F2;
+  --ws-ink: #1C1B19;
+  --ws-ink-secondary: #6E6A63;
+  --ws-ink-muted: #9E9990;
+  --ws-ink-inverse: #FAF9F6;
+  --ws-hairline: rgba(28, 25, 23, 0.075);
+  --ws-hairline-strong: rgba(28, 25, 23, 0.14);
+  --ws-pill-bg: rgba(28, 25, 23, 0.055);
+  --ws-pill-hover: rgba(28, 25, 23, 0.09);
+  --ws-accent: #1C1B19;
+  --ws-accent-soft: rgba(28, 25, 23, 0.08);
+  --ws-danger: #C42B1C;
+  --ws-danger-bg: #FDE7E9;
+
+  --ws-shadow-sm: 0 1px 2px rgba(28, 25, 23, 0.045), 0 1px 1px rgba(28, 25, 23, 0.03);
+  --ws-shadow-md: 0 6px 20px rgba(28, 25, 23, 0.07), 0 1px 3px rgba(28, 25, 23, 0.04);
+  --ws-shadow-float: 0 18px 48px rgba(28, 25, 23, 0.14), 0 2px 8px rgba(28, 25, 23, 0.06);
+
+  --ws-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ws-ease-spring: cubic-bezier(0.34, 1.28, 0.64, 1);
+  --ws-dur-quick: 150ms;
+  --ws-dur-fast: 240ms;
+  --ws-dur-panel: 300ms;
+
+  /* Blend reused desk/fluent calendar & gantt views seamlessly into Folio Light Mode */
+  --desk-bg: #FFFFFF;
+  --cell-bg: #FAF9F6;
+  --panel-bg: #FFFFFF;
+  --calendar-text: #1C1B19;
+  --calendar-text-secondary: rgba(28, 25, 23, 0.72);
+  --calendar-text-tertiary: rgba(28, 25, 23, 0.48);
+  --desk-stroke: rgba(28, 25, 23, 0.08);
+  --today-border: #1C1B19;
+  --today-border-width: 1.5px;
+  --today-fill: rgba(28, 25, 23, 0.055);
+  --today-text: #1C1B19;
+  --rest-tint: rgba(28, 25, 23, 0.024);
+  --solid-base: #EFEEEA;
+  --layer-fill: #FAF9F6;
+  --card-fill: #FFFFFF;
+  --fs: 1;
+  --cell-gap: 4px;
+  --line-gap: 3px;
+  --calendar-font-family: var(--font-ui);
+  --calendar-outline: none;
+  --text-glow: none;
+  --holiday-text: #C42B1C;
+  --term-text: #9A5B13;
+
+  background: var(--ws-stage-bg);
+}
+
+html[data-window='workspace'][data-ws-theme='dark'] {
+  --ws-stage-bg: #090A0C;
+  --ws-sidebar-bg: #111215;
+  --ws-card-bg: #17181C;
+  --ws-card-subtle: #1D1F24;
+  --ws-card-hover: #212329;
+  --ws-ink: #F2F0EB;
+  --ws-ink-secondary: rgba(242, 240, 235, 0.72);
+  --ws-ink-muted: rgba(242, 240, 235, 0.46);
+  --ws-ink-inverse: #141518;
+  --ws-hairline: rgba(255, 255, 255, 0.08);
+  --ws-hairline-strong: rgba(255, 255, 255, 0.15);
+  --ws-pill-bg: rgba(255, 255, 255, 0.07);
+  --ws-pill-hover: rgba(255, 255, 255, 0.12);
+  --ws-accent: #F2F0EB;
+  --ws-accent-soft: rgba(255, 255, 255, 0.09);
+  --desk-bg: #17181C;
+  --cell-bg: #1C1D22;
+  --panel-bg: #17181C;
+  --calendar-text: #F2F0EB;
+  --calendar-text-secondary: rgba(242, 240, 235, 0.72);
+  --calendar-text-tertiary: rgba(242, 240, 235, 0.46);
+  --solid-base: #090A0C;
+  --layer-fill: #111215;
+  --card-fill: #17181C;
+}
+
+html[data-window='workspace'] body {
+  margin: 0;
+  background: var(--ws-stage-bg);
+  color: var(--ws-ink);
+  font-family: var(--font-ui);
+  overflow: hidden;
+}
+
+.ws-root {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  background: var(--ws-stage-bg);
+  color: var(--ws-ink);
+  font-family: var(--font-ui);
+  user-select: none;
+  overflow: hidden;
+}
+
+.ws-root ::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.ws-root ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.ws-root ::-webkit-scrollbar-thumb {
+  background: rgba(28, 25, 23, 0.14);
+  border-radius: 999px;
+}
+
+.ws-root ::-webkit-scrollbar-thumb:hover {
+  background: rgba(28, 25, 23, 0.25);
+}
+
+.ws-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+.ws-stage {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 6px 14px 14px;
+  overflow: hidden;
+}
+
+.ws-card-frame {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--ws-card-bg);
+  border: 1px solid var(--ws-hairline);
+  border-radius: 18px;
+  box-shadow: var(--ws-shadow-sm);
+  padding: 12px 14px;
+  overflow: hidden;
+  position: relative;
+}
+
+.ws-settings-frame {
+  padding: 0;
+}
+
+.ws-scroll-page {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 6px 8px 40px;
+}
+
+.ws-container {
+  max-width: 980px;
+  margin: 0 auto;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.ws-card {
+  background: var(--ws-card-bg);
+  border: 1px solid var(--ws-hairline);
+  border-radius: 16px;
+  box-shadow: var(--ws-shadow-sm);
+}
+
+/* Editorial headers matching Folio Light Mode */
+.ws-eyebrow {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ws-ink-secondary);
+  letter-spacing: 0.01em;
+}
+
+.ws-page-title {
+  margin: 2px 0 0;
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  line-height: 1.18;
+  color: var(--ws-ink);
+}
+
+.ws-page-sub {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--ws-ink-secondary);
+}
+
+/* Primary matte-obsidian pill CTA */
+.ws-cta-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 36px;
+  padding: 0 15px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--ws-accent);
+  color: var(--ws-ink-inverse);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 120ms var(--ws-ease-out), opacity 140ms ease, box-shadow 160ms ease;
+}
+
+.ws-cta-btn:hover {
+  opacity: 0.92;
+}
+
+.ws-cta-btn:active {
+  transform: scale(0.975);
+}
+
+.ws-cta-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Icon circle button */
+.ws-icon-circle {
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ws-ink-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex: none;
+  font: inherit;
+  transition: background-color 140ms ease, color 140ms ease, transform 120ms var(--ws-ease-out), border-color 140ms ease;
+}
+
+.ws-icon-circle:hover {
+  background: var(--ws-pill-bg);
+  color: var(--ws-ink);
+}
+
+.ws-icon-circle:active {
+  transform: scale(0.93);
+}
+
+.ws-icon-circle.solid {
+  background: var(--ws-card-bg);
+  border-color: var(--ws-hairline);
+  box-shadow: var(--ws-shadow-sm);
+}
+
+.ws-icon-circle.solid:hover {
+  background: var(--ws-card-hover);
+  border-color: var(--ws-hairline-strong);
+}
+
+/* Animated task checkmark circle */
+.ws-check-circle {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  border: 1.5px solid rgba(28, 25, 23, 0.24);
+  background: transparent;
+  color: #FFFFFF;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex: none;
+  padding: 0;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    transform 180ms var(--ws-ease-spring);
+}
+
+.ws-check-circle:hover {
+  border-color: var(--ws-ink);
+  background: rgba(28, 25, 23, 0.04);
+}
+
+.ws-check-circle:active {
+  transform: scale(0.88);
+}
+
+.ws-check-circle.in-progress {
+  border-style: dashed;
+  border-color: #B5470D;
+  background: rgba(181, 71, 13, 0.08);
+}
+
+.ws-check-circle.done {
+  background: var(--ws-ink);
+  border-color: var(--ws-ink);
+}
+
+.ws-check-circle svg {
+  width: 11px;
+  height: 11px;
+  stroke: currentColor;
+  stroke-width: 2.1;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 16;
+  stroke-dashoffset: 16;
+  transition: stroke-dashoffset 220ms var(--ws-ease-out);
+}
+
+.ws-check-circle.done svg {
+  stroke-dashoffset: 0;
+}
+
+/* Stage transitions between views (smooth cross-blur fade) */
+.ws-stage-enter-active {
+  transition: opacity 210ms var(--ws-ease-out), transform 210ms var(--ws-ease-out), filter 210ms var(--ws-ease-out);
+}
+
+.ws-stage-leave-active {
+  transition: opacity 130ms ease, transform 130ms ease;
+}
+
+.ws-stage-enter-from {
+  opacity: 0;
+  transform: translateY(6px) scale(0.994);
+  filter: blur(2px);
+}
+
+.ws-stage-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+/* Floating Inspector slide + scale transition */
+.ws-inspector-enter-active {
+  transition: opacity 260ms var(--ws-ease-out), transform 260ms var(--ws-ease-out);
+}
+
+.ws-inspector-leave-active {
+  transition: opacity 170ms ease, transform 170ms ease;
+}
+
+.ws-inspector-enter-from,
+.ws-inspector-leave-to {
+  opacity: 0;
+  transform: translateX(26px) scale(0.98);
+}
+
+/* Modal scale-in / soft scale-out transition */
+.ws-modal-enter-active {
+  transition: opacity 220ms var(--ws-ease-out);
+}
+
+.ws-modal-leave-active {
+  transition: opacity 150ms ease;
+}
+
+.ws-modal-enter-active .ws-modal-card {
+  transition: transform 220ms var(--ws-ease-out), opacity 220ms var(--ws-ease-out);
+}
+
+.ws-modal-leave-active .ws-modal-card {
+  transition: transform 140ms ease, opacity 140ms ease;
+}
+
+.ws-modal-enter-from,
+.ws-modal-leave-to {
+  opacity: 0;
+}
+
+.ws-modal-enter-from .ws-modal-card {
+  opacity: 0;
+  transform: scale(0.955) translateY(8px);
+}
+
+.ws-modal-leave-to .ws-modal-card {
+  opacity: 0;
+  transform: scale(0.97);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ws-stage-enter-active,
+  .ws-stage-leave-active,
+  .ws-inspector-enter-active,
+  .ws-inspector-leave-active,
+  .ws-modal-enter-active,
+  .ws-modal-leave-active,
+  .ws-modal-enter-active .ws-modal-card,
+  .ws-modal-leave-active .ws-modal-card,
+  .ws-check-circle,
+  .ws-check-circle svg {
+    transition-duration: 0.01ms !important;
+  }
+}

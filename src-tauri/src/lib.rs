@@ -301,6 +301,37 @@ pub(crate) fn open_editor_new(app: &AppHandle) {
     open_editor(app, json!({ "mode": "new" }));
 }
 
+pub(crate) fn open_workspace(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("workspace") {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+        return;
+    }
+    on_event_loop(app, |app| {
+        if app.get_webview_window("workspace").is_some() {
+            return;
+        }
+        let built = WebviewWindowBuilder::new(app, "workspace", WebviewUrl::App("index.html".into()))
+            .title("FluentCal 工作台")
+            .inner_size(1340.0, 860.0)
+            .min_inner_size(940.0, 600.0)
+            .center()
+            .decorations(false)
+            .transparent(false)
+            .shadow(true)
+            .resizable(true)
+            .maximizable(true)
+            .minimizable(true)
+            .theme(Some(Theme::Light))
+            .visible(false)
+            .build();
+        if let Err(e) = built {
+            eprintln!("could not open the workspace window: {e}");
+        }
+    });
+}
+
 // ---------------------------------------------------------------------------------------
 // Shortcuts and autostart
 
@@ -392,6 +423,11 @@ fn editor_open(app: AppHandle, payload: Value) {
 }
 
 #[tauri::command]
+fn workspace_open(app: AppHandle) {
+    open_workspace(&app);
+}
+
+#[tauri::command]
 fn pending_take(app: AppHandle, webview: tauri::Webview) -> Option<Value> {
     let pending = app.state::<Pending>();
     match webview.label() {
@@ -439,6 +475,11 @@ fn screens_list(app: AppHandle) -> Vec<screens::Screen> {
 fn desk_move_to_screen(app: AppHandle, index: usize) {
     // Moving can resize the webview (other scale factor): do it outside the IPC callback.
     on_event_loop(&app, move |app| screens::move_to(app, index));
+}
+
+#[tauri::command]
+fn desk_set_sidebar(app: AppHandle, open: bool, delta: f64) {
+    on_event_loop(&app, move |app| screens::set_sidebar_width(app, open, delta));
 }
 
 #[tauri::command]
@@ -582,6 +623,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             screens_list,
             desk_move_to_screen,
+            desk_set_sidebar,
             cloud::commands::sync_status,
             cloud::commands::sync_now,
             cloud::commands::sync_probe,
@@ -609,6 +651,7 @@ pub fn run() {
             desk_hide,
             settings_open,
             editor_open,
+            workspace_open,
             pending_take,
             app_info,
             app_quit,

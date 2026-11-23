@@ -26,6 +26,20 @@ export interface RepeatRule {
   until?: ISODate;
 }
 
+export type TaskStatus = 'todo' | 'in_progress' | 'done';
+
+export interface TaskCheckItem {
+  id: string;
+  text: string;
+  done: boolean;
+}
+
+export interface TaskLink {
+  id: string;
+  title: string;
+  url: string;
+}
+
 export interface Task {
   /** 不定日待办 (GitHub #7): "month" = once every month on whichever day, "someday" = no date. */
   flex?: string;
@@ -39,6 +53,14 @@ export interface Task {
   end: ISODate;
   /** HH:mm; empty = all day. */
   time?: string;
+  /** Duration in minutes for timed tasks; defaults to 60 when `time` is set. */
+  duration?: number;
+  /** Workflow status synced with `done` and `progress`. */
+  status?: TaskStatus;
+  /** Structured subtasks rendered as a connected checklist in Workspace Inspector. */
+  checklist?: TaskCheckItem[];
+  /** Related URLs or local paths shown in Workspace Inspector. */
+  links?: TaskLink[];
   /** TASK_COLORS key or #RRGGBB; empty = default. */
   color?: string;
   groupId?: string;
@@ -93,7 +115,7 @@ export interface HolidayYear {
 
 export type ThemeMode = 'system' | 'light' | 'dark';
 export type PinMode = 'desktop' | 'top' | 'normal';
-export type CalendarView = 'month' | 'weeks' | 'gantt' | 'list';
+export type CalendarView = 'day' | 'multiday' | 'month' | 'weeks' | 'gantt' | 'list';
 export type GanttScale = 'day' | 'week' | 'month';
 
 export interface Settings {
@@ -108,12 +130,17 @@ export interface Settings {
   desk: {
     pinMode: PinMode;
     locked: boolean;
+    sidebarOpen: boolean;
+    sidebarWidth: number;
+    sidebarExternalSized: boolean;
     clickThrough: boolean;
     /** Desktop mode: clicks don't activate the window (keeps Win+D working). */
     noActivate: boolean;
     acrylic: boolean;
     /** 'auto' (follows theme) or #RRGGBB */
     bgColor: string;
+    /** Outer shell / divider frame color ('auto' or #RRGGBB). */
+    frameColor: string;
     /** 0–100 */
     bgOpacity: number;
     /** Opacity of the day cells, 0–100 */

@@ -45,4 +45,55 @@ describe('week layout', () => {
     const l = layoutWeek(week, occs([a, b]), { capacity: Infinity, completedLast: true });
     expect(l.chips.map((c) => c.occ.task.id)).toEqual([b.id, a.id]);
   });
+
+  it('places draft bar below multi-day bars and shifts single-day tasks down cleanly', () => {
+    const l = layoutWeek(week, occs([mon1, tue, bar, mon2]), {
+      capacity: Infinity,
+      completedLast: true,
+      draft: { start: '2026-10-26', end: '2026-10-27' },
+    });
+    const by = Object.fromEntries(l.chips.map((c) => [c.occ.task.id, c]));
+    expect(by.bar.lane).toBe(0);
+    expect(l.draft).toMatchObject({ col: 0, span: 2, lane: 1, floating: false, contLeft: false, contRight: false });
+    expect(by.mon1.lane).toBe(2);
+    expect(by.mon2.lane).toBe(3);
+    expect(by.tue.lane).toBe(2);
+  });
+
+  it('keeps draft non-floating and avoids colliding with "+N" when overflowing with room', () => {
+    const l = layoutWeek(week, occs([mon1, tue, bar, mon2]), {
+      capacity: 3,
+      completedLast: true,
+      draft: { start: '2026-10-26', end: '2026-10-27' },
+    });
+    const by = Object.fromEntries(l.chips.map((c) => [c.occ.task.id, c]));
+    expect(l.draft).toMatchObject({ lane: 1, floating: false });
+    expect(by.bar.visible).toBe(true);
+    expect(by.mon1.visible).toBe(false);
+    expect(by.mon2.visible).toBe(false);
+    expect(l.overflow[0]).toBe(2);
+    expect(l.overflowLane[0]).toBe(2);
+  });
+
+  it('marks draft floating and clamps lane when existing multi-day bars fill an overflowing column', () => {
+    const l = layoutWeek(week, occs([mon1, tue, bar, mon2]), {
+      capacity: 2,
+      completedLast: true,
+      draft: { start: '2026-10-26', end: '2026-10-27' },
+    });
+    const by = Object.fromEntries(l.chips.map((c) => [c.occ.task.id, c]));
+    expect(l.draft).toMatchObject({ lane: 1, floating: true });
+    expect(l.overflow[0]).toBe(2);
+    expect(l.overflowLane[0]).toBe(1);
+    expect(by.tue.visible).toBe(true);
+  });
+
+  it('clips cross-week draft bars with contLeft and contRight', () => {
+    const l = layoutWeek(week, [], {
+      capacity: Infinity,
+      completedLast: true,
+      draft: { start: '2026-10-24', end: '2026-11-03' },
+    });
+    expect(l.draft).toMatchObject({ col: 0, span: 7, contLeft: true, contRight: true, floating: false });
+  });
 });

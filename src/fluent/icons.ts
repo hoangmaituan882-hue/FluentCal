@@ -108,6 +108,7 @@ export const SVG_ICONS = {
     'M4 10.5h3a1.5 1.5 0 0 1 0 3H4a1.5 1.5 0 0 1 0-3z',
   ],
   milestone: ['M8 1.7 14.3 8 8 14.3 1.7 8z'],
+  sidebar: ['M2.5 3h11v10h-11z', 'M6 3v10'],
 } as const;
 
 /** The web view (?w=web on a phone) has no Segoe Fluent Icons font: outlines for the glyphs it

@@ -23,8 +23,11 @@ export const ui = reactive({
   activeView: '',
   locateRevision: 0,
   locateView: '',
+  /** Search & gantt focus state. */
   quickAdd: null as null | { date: ISODate },
   searchOpen: false,
+  /** Current column span in MultiDayView so TitleBar arrows step cleanly. */
+  multidaySpan: 5,
   /** Task the Gantt view should scroll to and select. */
   ganttFocus: '',
   /** Transient message at the bottom of the calendar, e.g. after a delete. */
@@ -64,26 +67,67 @@ export async function openInBrowser(): Promise<void> {
 
 export type EditorPayload =
   | { mode: 'edit'; taskId: string; date?: ISODate }
-  | { mode: 'new'; start?: ISODate; end?: ISODate; groupId?: string; title?: string; milestone?: boolean };
+  | { mode: 'new'; start?: ISODate; end?: ISODate; time?: string; duration?: number; groupId?: string; title?: string; milestone?: boolean };
 
 /** Web view: the task shown in the read-only details dialog. */
 export const details = reactive({ open: false, taskId: '', date: '' as ISODate });
+
+let editorHandler: ((payload: EditorPayload) => void) | null = null;
+let settingsHandler: ((page?: string) => void) | null = null;
+let ganttHandler: ((taskId?: string) => void) | null = null;
+
+export function setEditorHandler(fn: ((payload: EditorPayload) => void) | null): void {
+  editorHandler = fn;
+}
+
+export function setSettingsHandler(fn: ((page?: string) => void) | null): void {
+  settingsHandler = fn;
+}
+
+export function setGanttHandler(fn: ((taskId?: string) => void) | null): void {
+  ganttHandler = fn;
+}
+
+export function openWorkspace(): void {
+  void call('workspace_open');
+}
 
 export function openEditor(payload: EditorPayload): void {
   if (storeState.readOnly) {
     if (payload.mode === 'edit') Object.assign(details, { open: true, taskId: payload.taskId, date: payload.date ?? '' });
     return;
   }
+  if (editorHandler) {
+    editorHandler(payload);
+    return;
+  }
   void call('editor_open', { payload });
 }
 
 export function openSettings(page?: string): void {
+  if (settingsHandler) {
+    settingsHandler(page);
+    return;
+  }
   void call('settings_open', { page });
+}
+
+export function openGanttTask(taskId: string): void {
+  ui.ganttFocus = taskId;
+  if (ganttHandler) {
+    ganttHandler(taskId);
+    return;
+  }
+  patchSettings({ calendar: { view: 'gantt' } });
 }
 
 /** "2026年10月", the range of the weeks view, or "甘特图" (title bar and web view). */
 export function viewTitle(): string {
-  const view = doc.settings.calendar.view;
+  const view = ui.activeView || doc.settings.calendar.view;
+  if (view === 'day' || view === 'multiday') {
+    const [y, m] = parts(ui.selected);
+    return tr("{0}年{1}月", y, m);
+  }
   if (view === 'gantt') return tr("甘特图");
   if (view === 'weeks') {
     const s = ui.weeksStart || defaultWeeksStart();
@@ -113,7 +157,14 @@ export function goToday(): void {
 
 export function page(delta: number): void {
   clearReveal();
-  if (doc.settings.calendar.view === 'weeks') {
+  const view = ui.activeView || doc.settings.calendar.view;
+  if (view === 'day') {
+    ui.selected = addDays(ui.selected, delta);
+    ui.cursor = startOfMonth(ui.selected);
+  } else if (view === 'multiday') {
+    ui.selected = addDays(ui.selected, delta * Math.max(1, ui.multidaySpan));
+    ui.cursor = startOfMonth(ui.selected);
+  } else if (view === 'weeks') {
     ui.weeksStart = addDays(ui.weeksStart || defaultWeeksStart(), delta * 7);
   } else {
     ui.cursor = addMonths(startOfMonth(ui.cursor), delta);
@@ -126,7 +177,7 @@ export function jumpTo(date: ISODate, taskId = ''): void {
   const view = ui.activeView || doc.settings.calendar.view;
   if (view === 'gantt' || view === 'list' && !taskId) {
     ui.locateView = 'month';
-    patchSettings({ calendar: { view: 'month' } });
+    if (!ui.activeView) patchSettings({ calendar: { view: 'month' } });
   }
   ui.cursor = startOfMonth(date);
   ui.weeksStart = addDays(startOfWeek(date, doc.settings.calendar.weekStart), -7 * doc.settings.calendar.weeksPast);

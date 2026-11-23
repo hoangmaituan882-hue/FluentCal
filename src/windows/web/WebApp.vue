@@ -6,8 +6,11 @@ import { call, on } from '@/api';
 import { doc, initStore, patchSettings, storeState } from '@/stores/doc';
 import { deskVars, startThemeSync } from '@/composables/theme';
 import { startClock } from '@/composables/now';
+import type { CalendarView } from '@/types';
 import type { WebStatus } from '@/webApi';
 import { clearReveal, goToday, notify, page, ui, viewTitle } from '../desk/state';
+import DayView from '../desk/DayView.vue';
+import MultiDayView from '../desk/MultiDayView.vue';
 import MonthView from '../desk/MonthView.vue';
 import SearchPanel from '../desk/SearchPanel.vue';
 import CountdownBar from '../desk/CountdownBar.vue';
@@ -45,6 +48,8 @@ watch(() => ui.locateRevision, () => {
 });
 const views = computed(() => [
   { value: 'list', label: tr("列表") },
+  { value: 'day', label: '日' },
+  { value: 'multiday', label: '多日' },
   { value: 'month', label: tr("月") },
   { value: 'weeks', label: tr("多周") },
   { value: 'gantt', label: tr("甘特") },
@@ -61,7 +66,7 @@ const viewModel = computed({
     clearReveal();
     chosen.value = v;
     localStorage.setItem(VIEW_KEY, v);
-    if (v !== 'list') patchSettings({ calendar: { view: v as 'month' | 'weeks' | 'gantt' } });
+    if (v !== 'list') patchSettings({ calendar: { view: v as CalendarView } });
   },
 });
 const title = computed(() => viewTitle());
@@ -110,7 +115,7 @@ function onKey(e: KeyboardEvent) {
   if (e.defaultPrevented || (e.target as HTMLElement).closest?.('input, textarea, [role="combobox"], [role="listbox"]')) return;
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') ui.searchOpen = true;
   else if (e.key === 'Escape' && ui.searchOpen) ui.searchOpen = false;
-  else if (view.value === 'month' || view.value === 'weeks') {
+  else if (view.value === 'day' || view.value === 'multiday' || view.value === 'month' || view.value === 'weeks') {
     if (e.key === 'Home') goToday();
     else if (e.key === 'PageUp' || e.key === 'PageDown') page(e.key === 'PageUp' ? -1 : 1);
     else return;
@@ -146,9 +151,9 @@ onBeforeUnmount(() => {
         </button>
       </div>
       <h1 v-else class="title">{{ title }}</h1>
-      <template v-if="view === 'month' || view === 'weeks'">
-        <FButton variant="subtle" size="icon" icon="chevronLeft" :title="view === 'weeks' ? tr('上一周') : tr('上个月')" @click="page(-1)" />
-        <FButton variant="subtle" size="icon" icon="chevronRight" :title="view === 'weeks' ? tr('下一周') : tr('下个月')" @click="page(1)" />
+      <template v-if="view === 'day' || view === 'multiday' || view === 'month' || view === 'weeks'">
+        <FButton variant="subtle" size="icon" icon="chevronLeft" :title="view === 'day' ? '上一天' : view === 'multiday' ? '上一组日期' : view === 'weeks' ? tr('上一周') : tr('上个月')" @click="page(-1)" />
+        <FButton variant="subtle" size="icon" icon="chevronRight" :title="view === 'day' ? '下一天' : view === 'multiday' ? '下一组日期' : view === 'weeks' ? tr('下一周') : tr('下个月')" @click="page(1)" />
         <FButton variant="subtle" size="small" @click="goToday">{{ tr("今天") }}</FButton>
       </template>
       <span class="grow" />
@@ -170,9 +175,11 @@ onBeforeUnmount(() => {
       <p v-if="!storeState.ready" class="loading">{{ status === 'connecting' ? tr("正在连接电脑上的 FluentCal…") : '' }}</p>
       <template v-else>
         <AgendaView v-if="view === 'list'" :key="language" :range="listRange" />
+        <DayView v-else-if="view === 'day'" :key="language" />
+        <MultiDayView v-else-if="view === 'multiday'" :key="language" />
         <GanttView v-else-if="view === 'gantt'" :key="language" />
         <MonthView v-else :key="language" :mode="view === 'weeks' ? 'weeks' : 'month'" />
-        <CountdownBar v-if="view !== 'gantt'" />
+        <CountdownBar v-if="view !== 'gantt' && view !== 'day' && view !== 'multiday'" />
       </template>
       <SearchPanel v-if="ui.searchOpen && storeState.ready" />
       <Transition name="toast">

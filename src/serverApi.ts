@@ -352,6 +352,9 @@ export async function call<T>(cmd: string, args: Json = {}): Promise<T> {
     case 'settings_open':
       serverModals.settings = { page: typeof args.page === 'string' ? args.page : undefined };
       break;
+    case 'workspace_open':
+      location.search = '?w=workspace';
+      break;
     case 'app_info': {
       const t = new URLSearchParams(location.search).get('theme');
       res = {

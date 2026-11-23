@@ -1,5 +1,6 @@
 import { DEFAULT_SETTINGS, mergeDefaults } from "@/defaults";
 import { isISODate } from "@/lib/date";
+import { sanitizeChecklist, sanitizeLinks, sanitizeStatus } from "@/lib/taskMeta";
 import type { Doc, Task } from "@/types";
 
 export function emptyDocument(): Doc {
@@ -58,6 +59,11 @@ export function readDocument(text: string): Doc {
       (typeof v.time !== "string" || !/^([01]\d|2[0-3]):[0-5]\d$/.test(v.time))
     )
       throw new Error(`任务 ${v.title} 的时间无效`);
+    const duration =
+      typeof v.duration === "number" && Number.isFinite(v.duration) && v.duration > 0
+        ? Math.min(1440, Math.max(15, Math.round(v.duration)))
+        : undefined;
+    delete v.duration;
     if (v.notes !== undefined && typeof v.notes !== "string")
       throw new Error(`任务 ${v.title} 的备注无效`);
     for (const key of ["color", "groupId"])
@@ -104,8 +110,18 @@ export function readDocument(text: string): Doc {
       : {};
     delete v.doneOn;
     delete v.doneOnDates;
+    const status = sanitizeStatus(v.status);
+    const checklist = sanitizeChecklist(v.checklist);
+    const links = sanitizeLinks(v.links);
+    delete v.status;
+    delete v.checklist;
+    delete v.links;
     out.tasks[id] = {
       ...v,
+      ...(duration !== undefined ? { duration } : {}),
+      ...(status ? { status } : {}),
+      ...(checklist ? { checklist } : {}),
+      ...(links ? { links } : {}),
       ...(doneOn ? { doneOn } : {}),
       ...(Object.keys(doneOnDates).length ? { doneOnDates } : {}),
       id,

@@ -40,8 +40,8 @@ defineProps<{ kind: 'mode' | 'preset' }>();
       :class="{ on: matchPreset(doc.settings) === p.id }"
       @click="patchSettings(p.patch)"
     >
-      <span class="thumb wall">
-        <span class="mini" :class="{ dark: p.thumb.dark, acr: p.thumb.acrylic }" :style="{ '--bg': p.thumb.bg, '--cell': p.thumb.cell }">
+      <span class="thumb wall" :class="{ creamWall: p.thumb.cream }">
+        <span class="mini" :class="{ dark: p.thumb.dark, acr: p.thumb.acrylic, cream: p.thumb.cream }" :style="{ '--bg': p.thumb.bg, '--cell': p.thumb.cell }">
           <span v-for="i in 21" :key="i" :class="{ today: i === 10 }" />
         </span>
       </span>
@@ -129,6 +129,9 @@ defineProps<{ kind: 'mode' | 'preset' }>();
 .thumb.wall {
   background: linear-gradient(160deg, #0b2a5b, #1b4f9c 55%, #3a7bd5);
 }
+.thumb.creamWall {
+  background: #eae8e2;
+}
 .mini {
   width: 84%;
   padding: 5px;
@@ -137,6 +140,10 @@ defineProps<{ kind: 'mode' | 'preset' }>();
   grid-template-columns: repeat(7, 1fr);
   gap: 2px;
   background: rgba(243, 243, 243, var(--bg));
+}
+.mini.cream {
+  background: #faf8f3;
+  border: 1px solid rgba(43, 40, 37, 0.08);
 }
 .mini.dark {
   background: rgba(32, 32, 32, var(--bg));
@@ -149,11 +156,17 @@ defineProps<{ kind: 'mode' | 'preset' }>();
   border-radius: 2px;
   background: rgba(255, 255, 255, calc(var(--cell) * 0.9));
 }
+.mini.cream span {
+  background: #f2efe8;
+}
 .mini.dark span {
   background: rgba(60, 60, 60, var(--cell));
 }
 .mini span.today {
   box-shadow: inset 0 0 0 1.5px var(--accent-fill);
+}
+.mini.cream span.today {
+  box-shadow: inset 0 0 0 1.5px #e85a3c;
 }
 .label {
   font-size: 13px;
