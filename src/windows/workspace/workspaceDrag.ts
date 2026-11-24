@@ -169,7 +169,7 @@ export async function dropTaskToDate(
   durationMin?: number,
 ): Promise<boolean> {
   const t = findTaskById(taskId);
-  if (!t || t.subscriptionOnly || t.countdownOnly) return false;
+  if (!t || t.subscriptionOnly || t.countdownOnly || t.habitOnly) return false;
 
   const isFlex = !!flexKind(t);
   const span = isFlex || !t.start || !t.end ? 0 : Math.max(0, diffDays(t.start, t.end));
@@ -190,7 +190,7 @@ export async function dropTaskToDate(
 
 export async function dropTaskToInbox(taskId: string): Promise<boolean> {
   const t = findTaskById(taskId);
-  if (!t || t.subscriptionOnly || t.countdownOnly) return false;
+  if (!t || t.subscriptionOnly || t.countdownOnly || t.habitOnly) return false;
   if (flexKind(t) === SOMEDAY) {
     endTaskDrag();
     return false;
@@ -208,7 +208,7 @@ export async function dropTaskToInbox(taskId: string): Promise<boolean> {
 
 export async function dropTaskToGroup(taskId: string, groupId: string): Promise<boolean> {
   const t = findTaskById(taskId);
-  if (!t || t.subscriptionOnly || t.countdownOnly) return false;
+  if (!t || t.subscriptionOnly || t.countdownOnly || t.habitOnly) return false;
   const g = doc.groups[groupId];
   if (!g || t.groupId === groupId) {
     endTaskDrag();
@@ -222,7 +222,7 @@ export async function dropTaskToGroup(taskId: string, groupId: string): Promise<
 
 export async function dropTaskToStarred(taskId: string): Promise<boolean> {
   const t = findTaskById(taskId);
-  if (!t || t.subscriptionOnly || t.countdownOnly) return false;
+  if (!t || t.subscriptionOnly || t.countdownOnly || t.habitOnly) return false;
   if (t.starred) {
     endTaskDrag();
     return false;

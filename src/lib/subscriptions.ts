@@ -5,9 +5,11 @@ import type {
   SubscriptionCycle,
   SubscriptionMeta,
   SubscriptionStatus,
+  SubscriptionSubAccount,
   Task,
 } from '@/types';
 import { addDays, addMonths, daysInMonth, diffDays, pad2, parts, ymd } from './date';
+import { inferBrandFromTitle } from './subscriptionIcons';
 
 export const CURRENCY_META: Record<
   SubscriptionCurrency,
@@ -36,20 +38,34 @@ export const CATEGORY_META: Record<
   SubscriptionCategory,
   { label: string; watermark: string; color: string; toneClass: string }
 > = {
-  life: { label: '生活与居住', watermark: '生活居住', color: '#3F7D58', toneClass: 'tone-life' },
-  ai: { label: 'AI 工具', watermark: 'AI TOOLS', color: '#635BFF', toneClass: 'tone-ai' },
-  cloud: { label: '服务器与云', watermark: 'CLOUD', color: '#0284C7', toneClass: 'tone-cloud' },
-  media: { label: '影音音乐', watermark: 'MEDIA', color: '#E11D48', toneClass: 'tone-media' },
-  work: { label: '效率软件', watermark: 'STUDIO', color: '#D97706', toneClass: 'tone-work' },
-  other: { label: '其他订阅', watermark: 'MORE', color: '#64748B', toneClass: 'tone-other' },
+  life: { label: '生活与居住', watermark: '生活与居住', color: '#3F7D58', toneClass: 'tone-life' },
+  ai: { label: 'AI 工具', watermark: 'AI 工具', color: '#635BFF', toneClass: 'tone-ai' },
+  cloud: { label: '服务器与云', watermark: '服务器与云', color: '#0284C7', toneClass: 'tone-cloud' },
+  media: { label: '影音音乐', watermark: '影音音乐', color: '#E11D48', toneClass: 'tone-media' },
+  work: { label: '效率软件', watermark: '效率软件', color: '#D97706', toneClass: 'tone-work' },
+  other: { label: '其他订阅', watermark: '其他订阅', color: '#64748B', toneClass: 'tone-other' },
 };
 
 export const STATUS_LABELS: Record<SubscriptionStatus, string> = {
   active: '订阅中',
+  ending: '已关续费',
   trial: '试用中',
   paused: '已暂停',
-  cancelled: '已取消',
+  cancelled: '已退订',
 };
+
+export const SUBSCRIPTION_STATUSES: SubscriptionStatus[] = [
+  'active',
+  'ending',
+  'trial',
+  'paused',
+  'cancelled',
+];
+
+/** True when the subscription is currently providing benefits within its active window. */
+export function isSubscriptionActiveStatus(status: SubscriptionStatus): boolean {
+  return status === 'active' || status === 'ending' || status === 'trial';
+}
 
 export const SUBSCRIPTION_CATEGORIES: SubscriptionCategory[] = [
   'life',
@@ -94,7 +110,9 @@ export const EMBLEM_CHOICES = ['✦', '♫', '☁', '⚡', '⌘', '📺', '♪',
 
 export interface SubscriptionPreset {
   key: string;
+  brandKey?: string;
   title: string;
+  plan?: string;
   watermark: string;
   emblem: string;
   brandColor: string;
@@ -106,37 +124,195 @@ export interface SubscriptionPreset {
   paymentMethod: string;
   status?: SubscriptionStatus;
   autoRenew?: boolean;
+  discountAmount?: number;
+  promoPrice?: number;
+  promoLabel?: string;
 }
 
 export const SUBSCRIPTION_PRESETS: SubscriptionPreset[] = [
   {
     key: 'chatgpt',
+    brandKey: 'chatgpt',
     title: 'ChatGPT Plus',
-    watermark: 'ChatGPT',
+    plan: 'Plus',
+    watermark: 'ChatGPT Plus',
     emblem: '✦',
     brandColor: '#10A37F',
     price: 20,
     currency: 'USD',
     cycle: 'monthly',
     category: 'ai',
-    paymentMethod: 'Apple 订阅',
+    paymentMethod: 'Apple Pay',
+    autoRenew: true,
+  },
+  {
+    key: 'chatgpt-pro',
+    brandKey: 'chatgpt',
+    title: 'ChatGPT Pro',
+    plan: 'Pro',
+    watermark: 'ChatGPT Pro',
+    emblem: '✦',
+    brandColor: '#10A37F',
+    price: 200,
+    currency: 'USD',
+    cycle: 'monthly',
+    category: 'ai',
+    paymentMethod: '银行卡',
     autoRenew: true,
   },
   {
     key: 'claude',
+    brandKey: 'claude',
     title: 'Claude Pro',
-    watermark: 'Claude',
+    plan: 'Pro',
+    watermark: 'Claude Pro',
     emblem: '✴',
     brandColor: '#D97757',
     price: 20,
     currency: 'USD',
     cycle: 'monthly',
     category: 'ai',
-    paymentMethod: 'Visa 信用卡',
+    paymentMethod: '银行卡',
+    autoRenew: true,
+  },
+  {
+    key: 'claude-max',
+    brandKey: 'claude',
+    title: 'Claude Max',
+    plan: 'Max 5x',
+    watermark: 'Claude Max',
+    emblem: '✴',
+    brandColor: '#D97757',
+    price: 100,
+    currency: 'USD',
+    cycle: 'monthly',
+    category: 'ai',
+    paymentMethod: '银行卡',
+    autoRenew: true,
+  },
+  {
+    key: 'cursor',
+    brandKey: 'cursor',
+    title: 'Cursor Pro',
+    plan: 'Pro',
+    watermark: 'Cursor Pro',
+    emblem: '▷',
+    brandColor: '#18181B',
+    price: 20,
+    currency: 'USD',
+    cycle: 'monthly',
+    category: 'ai',
+    paymentMethod: '银行卡',
+    autoRenew: true,
+  },
+  {
+    key: 'gemini',
+    brandKey: 'gemini',
+    title: 'Gemini AI Pro',
+    plan: 'AI Pro',
+    watermark: 'Gemini AI Pro',
+    emblem: '✦',
+    brandColor: '#4285F4',
+    price: 19.99,
+    currency: 'USD',
+    cycle: 'monthly',
+    category: 'ai',
+    paymentMethod: 'Google Play',
+    autoRenew: true,
+  },
+  {
+    key: 'copilot',
+    brandKey: 'github',
+    title: 'GitHub Copilot',
+    plan: 'Pro',
+    watermark: 'GitHub Copilot',
+    emblem: '⌘',
+    brandColor: '#24292F',
+    price: 10,
+    currency: 'USD',
+    cycle: 'monthly',
+    category: 'ai',
+    paymentMethod: '银行卡',
+    autoRenew: true,
+  },
+  {
+    key: 'perplexity',
+    brandKey: 'perplexity',
+    title: 'Perplexity Pro',
+    plan: 'Pro',
+    watermark: 'Perplexity Pro',
+    emblem: '✳',
+    brandColor: '#1FB8CD',
+    price: 20,
+    currency: 'USD',
+    cycle: 'monthly',
+    category: 'ai',
+    paymentMethod: 'Apple Pay',
+    autoRenew: true,
+  },
+  {
+    key: 'grok',
+    brandKey: 'grok',
+    title: 'SuperGrok',
+    plan: 'SuperGrok',
+    watermark: 'SuperGrok',
+    emblem: 'G',
+    brandColor: '#141416',
+    price: 30,
+    currency: 'USD',
+    cycle: 'monthly',
+    category: 'ai',
+    paymentMethod: '银行卡',
+    autoRenew: true,
+  },
+  {
+    key: 'windsurf',
+    brandKey: 'windsurf',
+    title: 'Windsurf Pro',
+    plan: 'Pro',
+    watermark: 'Windsurf Pro',
+    emblem: 'W',
+    brandColor: '#09B6A2',
+    price: 15,
+    currency: 'USD',
+    cycle: 'monthly',
+    category: 'ai',
+    paymentMethod: '银行卡',
+    autoRenew: true,
+  },
+  {
+    key: 'midjourney',
+    brandKey: 'midjourney',
+    title: 'Midjourney',
+    plan: 'Basic',
+    watermark: 'Midjourney',
+    emblem: '⛵',
+    brandColor: '#1E293B',
+    price: 10,
+    currency: 'USD',
+    cycle: 'monthly',
+    category: 'ai',
+    paymentMethod: '银行卡',
+    autoRenew: true,
+  },
+  {
+    key: 'netease-music',
+    brandKey: 'netease-music',
+    title: '网易云音乐',
+    plan: '黑胶 VIP',
+    watermark: '网易云音乐',
+    emblem: '♫',
+    brandColor: '#D43C33',
+    price: 15,
+    currency: 'CNY',
+    cycle: 'monthly',
+    category: 'media',
+    paymentMethod: '支付宝',
     autoRenew: true,
   },
   {
     key: 'apple-music',
+    brandKey: 'apple-music',
     title: 'Apple Music',
     watermark: 'Apple Music',
     emblem: '♫',
@@ -145,13 +321,14 @@ export const SUBSCRIPTION_PRESETS: SubscriptionPreset[] = [
     currency: 'CNY',
     cycle: 'monthly',
     category: 'media',
-    paymentMethod: 'Apple 订阅',
+    paymentMethod: 'Apple Pay',
     autoRenew: true,
   },
   {
     key: 'icloud',
+    brandKey: 'icloud',
     title: 'iCloud+ 2TB 家庭组',
-    watermark: 'iCloud+',
+    watermark: 'iCloud+ 2TB 家庭组',
     emblem: '☁',
     brandColor: '#2563EB',
     price: 68,
@@ -164,34 +341,40 @@ export const SUBSCRIPTION_PRESETS: SubscriptionPreset[] = [
   },
   {
     key: 'meituan',
+    brandKey: 'meituan',
     title: '美团神会员',
-    watermark: 'Meituan',
+    watermark: '美团神会员',
     emblem: '美',
     brandColor: '#EAB308',
-    price: 16.8,
+    price: 19.8,
+    discountAmount: 3,
+    promoPrice: 6.8,
+    promoLabel: '首月特惠',
     currency: 'CNY',
     cycle: 'monthly',
     category: 'life',
-    paymentMethod: '微信自动扣款',
+    paymentMethod: '微信支付',
     autoRenew: true,
   },
   {
     key: 'bilibili',
+    brandKey: 'bilibili',
     title: 'B站大会员',
-    watermark: 'Bilibili',
+    watermark: 'B站大会员',
     emblem: '📺',
     brandColor: '#FB7299',
     price: 148,
     currency: 'CNY',
     cycle: 'yearly',
     category: 'media',
-    paymentMethod: '支付宝代扣',
+    paymentMethod: '支付宝',
     autoRenew: true,
   },
   {
     key: 'spotify',
+    brandKey: 'spotify',
     title: 'Spotify 家庭组',
-    watermark: 'Spotify',
+    watermark: 'Spotify 家庭组',
     emblem: '♪',
     brandColor: '#1DB954',
     price: 38,
@@ -204,8 +387,9 @@ export const SUBSCRIPTION_PRESETS: SubscriptionPreset[] = [
   },
   {
     key: 'vps',
+    brandKey: 'vps',
     title: 'Linux 云服务器 VPS',
-    watermark: 'Server',
+    watermark: 'Linux 云服务器 VPS',
     emblem: '⌘',
     brandColor: '#0EA5E9',
     price: 65,
@@ -214,20 +398,6 @@ export const SUBSCRIPTION_PRESETS: SubscriptionPreset[] = [
     category: 'cloud',
     paymentMethod: '微信支付',
     autoRenew: true,
-  },
-  {
-    key: 'trial-app',
-    title: '效率工具试用',
-    watermark: 'Trial',
-    emblem: '⚡',
-    brandColor: '#E85D2A',
-    price: 98,
-    currency: 'CNY',
-    cycle: 'yearly',
-    category: 'work',
-    paymentMethod: '试用护盾',
-    status: 'trial',
-    autoRenew: false,
   },
 ];
 
@@ -240,10 +410,48 @@ export function effectiveSplit(meta: SubscriptionMeta): number {
   return n >= 1 ? n : 1;
 }
 
-/** Personal payable amount in original currency after dividing by splitCount. */
+/** Clamped per-cycle discount off original price in original currency. */
+export function cycleDiscountOriginal(meta: Pick<SubscriptionMeta, 'price' | 'discountAmount'>): number {
+  const raw = Number.isFinite(meta.price) ? Math.max(0, meta.price) : 0;
+  const disc = Number.isFinite(meta.discountAmount ?? 0) ? Math.max(0, meta.discountAmount ?? 0) : 0;
+  return Math.min(raw, disc);
+}
+
+/** Net regular cycle price (after recurring discount, before split-bill division). */
+export function netPriceOriginal(meta: Pick<SubscriptionMeta, 'price' | 'discountAmount'>): number {
+  const raw = Number.isFinite(meta.price) ? Math.max(0, meta.price) : 0;
+  return Math.max(0, raw - cycleDiscountOriginal(meta));
+}
+
+/** Personal payable regular amount in original currency (after recurring discount & splitCount). */
 export function personalPriceOriginal(meta: SubscriptionMeta): number {
+  return netPriceOriginal(meta) / effectiveSplit(meta);
+}
+
+/** Personal original pre-discount list price in original currency (after splitCount). */
+export function originalListPersonal(meta: SubscriptionMeta): number {
   const raw = Number.isFinite(meta.price) ? Math.max(0, meta.price) : 0;
   return raw / effectiveSplit(meta);
+}
+
+/** Personal first-period / introductory promo price in original currency, or null when unset. */
+export function promoPersonalOriginal(meta: SubscriptionMeta): number | null {
+  if (typeof meta.promoPrice !== 'number' || !Number.isFinite(meta.promoPrice) || meta.promoPrice < 0) {
+    return null;
+  }
+  return meta.promoPrice / effectiveSplit(meta);
+}
+
+/** True if the subscription's intro/first-period promo is still active at `refToday`. */
+export function isWithinPromoPeriod(
+  anchor: ISODate,
+  cycle: SubscriptionCycle,
+  refToday: ISODate,
+  promoPeriods?: number,
+): boolean {
+  const periods = Math.max(1, Math.floor(promoPeriods ?? 1));
+  const promoEnd = stepBillingDate(anchor, cycle, periods);
+  return refToday < promoEnd;
 }
 
 /** Converts an amount in `currency` to CNY using default reference rates. */
@@ -252,23 +460,47 @@ export function toCNY(amount: number, currency: SubscriptionCurrency): number {
   return amount * rate;
 }
 
-/** Personal payable amount per billing cycle converted to CNY. */
+function amortizeToMonthly(perCycleCNY: number, cycle: SubscriptionCycle): number {
+  if (cycle === 'weekly') return (perCycleCNY * 52) / 12;
+  if (cycle === 'monthly') return perCycleCNY;
+  if (cycle === 'quarterly') return perCycleCNY / 3;
+  if (cycle === 'semiannual') return perCycleCNY / 6;
+  return perCycleCNY / 12;
+}
+
+/** Personal payable amount per billing cycle for the primary subscription converted to CNY. */
 export function cycleCostCNY(meta: SubscriptionMeta): number {
   return toCNY(personalPriceOriginal(meta), meta.currency);
 }
 
-/** Amortized monthly cost in CNY (yearly / 12, quarterly / 3, weekly * 52/12). */
-export function monthlyEquivalentCNY(meta: SubscriptionMeta): number {
-  if (meta.status === 'paused' || meta.status === 'cancelled') return 0;
-  const perCycle = cycleCostCNY(meta);
-  if (meta.cycle === 'weekly') return (perCycle * 52) / 12;
-  if (meta.cycle === 'monthly') return perCycle;
-  if (meta.cycle === 'quarterly') return perCycle / 3;
-  if (meta.cycle === 'semiannual') return perCycle / 6;
-  return perCycle / 12;
+/** Amortized monthly cost in CNY for a single child sub-account. */
+export function subAccountMonthlyCNY(acc: SubscriptionSubAccount, parent: SubscriptionMeta): number {
+  const st = acc.status ?? 'active';
+  if (!isSubscriptionActiveStatus(st)) return 0;
+  const cur = acc.currency ?? parent.currency;
+  const cy = acc.cycle ?? parent.cycle;
+  const netOrig = netPriceOriginal({ price: acc.price, discountAmount: acc.discountAmount });
+  return amortizeToMonthly(toCNY(netOrig, cur), cy);
 }
 
-/** Amortized yearly cost in CNY. */
+/** Amortized monthly cost in CNY for the primary subscription alone. */
+export function primaryMonthlyCNY(meta: SubscriptionMeta): number {
+  if (!isSubscriptionActiveStatus(meta.status)) return 0;
+  return amortizeToMonthly(cycleCostCNY(meta), meta.cycle);
+}
+
+/** Amortized monthly cost in CNY for all active child sub-accounts combined. */
+export function subAccountsTotalMonthlyCNY(meta: SubscriptionMeta): number {
+  if (!meta.accounts?.length) return 0;
+  return meta.accounts.reduce((sum, acc) => sum + subAccountMonthlyCNY(acc, meta), 0);
+}
+
+/** Total amortized monthly cost in CNY (primary subscription + all active child sub-accounts). */
+export function monthlyEquivalentCNY(meta: SubscriptionMeta): number {
+  return primaryMonthlyCNY(meta) + subAccountsTotalMonthlyCNY(meta);
+}
+
+/** Total amortized yearly cost in CNY. */
 export function yearlyEquivalentCNY(meta: SubscriptionMeta): number {
   return monthlyEquivalentCNY(meta) * 12;
 }
@@ -276,9 +508,36 @@ export function yearlyEquivalentCNY(meta: SubscriptionMeta): number {
 /** Monthly savings in CNY from split-bill sharing (0 when splitCount === 1). */
 export function monthlySplitSavingsCNY(meta: SubscriptionMeta): number {
   const split = effectiveSplit(meta);
-  if (split <= 1 || meta.status === 'paused' || meta.status === 'cancelled') return 0;
-  const fullMonthly = monthlyEquivalentCNY({ ...meta, splitCount: 1 });
-  return Math.max(0, fullMonthly - monthlyEquivalentCNY(meta));
+  if (split <= 1 || !isSubscriptionActiveStatus(meta.status)) return 0;
+  const fullPrimary = primaryMonthlyCNY({ ...meta, splitCount: 1 });
+  return Math.max(0, fullPrimary - primaryMonthlyCNY(meta));
+}
+
+/** Monthly savings in CNY from recurring cycle discounts (primary + sub-accounts). */
+export function monthlyDiscountSavingsCNY(meta: SubscriptionMeta): number {
+  let saved = 0;
+  if (isSubscriptionActiveStatus(meta.status)) {
+    const discOrig = cycleDiscountOriginal(meta) / effectiveSplit(meta);
+    saved += amortizeToMonthly(toCNY(discOrig, meta.currency), meta.cycle);
+  }
+  for (const acc of meta.accounts ?? []) {
+    if (!isSubscriptionActiveStatus(acc.status ?? 'active')) continue;
+    const discOrig = cycleDiscountOriginal({ price: acc.price, discountAmount: acc.discountAmount });
+    if (discOrig > 0) {
+      saved += amortizeToMonthly(toCNY(discOrig, acc.currency ?? meta.currency), acc.cycle ?? meta.cycle);
+    }
+  }
+  return saved;
+}
+
+/** Combined monthly savings in CNY (split-bill + recurring discounts). */
+export function totalMonthlySavingsCNY(meta: SubscriptionMeta): number {
+  return monthlySplitSavingsCNY(meta) + monthlyDiscountSavingsCNY(meta);
+}
+
+/** Count of accounts tracked under this subscription card (primary + child sub-accounts). */
+export function totalAccountsCount(meta: SubscriptionMeta): number {
+  return 1 + (meta.accounts?.length ?? 0);
 }
 
 export function formatCurrencyAmount(amount: number, currency: SubscriptionCurrency, decimals?: number): string {
@@ -376,11 +635,21 @@ export interface ResolvedSubscription {
   meta: SubscriptionMeta;
   window: BillingCycleWindow;
   personalOrig: number;
+  originalListOrig: number;
+  discountOrig: number;
+  promoPersonalOrig: number | null;
+  promoSavingsOrig: number;
+  inPromoNow: boolean;
   cycleCNY: number;
+  primaryMonthlyCNY: number;
+  subAccountsMonthlyCNY: number;
   monthlyCNY: number;
   yearlyCNY: number;
   monthlySavedCNY: number;
+  totalAccountsCount: number;
   emblem: string;
+  brandKey?: string;
+  iconData?: string;
   brandColor: string;
   watermark: string;
 }
@@ -392,18 +661,64 @@ export function resolveSubscription(
   const meta = task.subscription;
   const window = computeCycleWindow(task.start, meta.cycle, refToday);
   const catMeta = CATEGORY_META[meta.category] ?? CATEGORY_META.other;
+  const inferred = !meta.iconData && !meta.brandKey ? inferBrandFromTitle(task.title) : undefined;
+  const personalOrig = personalPriceOriginal(meta);
+  const originalListOrig = originalListPersonal(meta);
+  const discountOrig = Math.max(0, originalListOrig - personalOrig);
+  const promoPersonalOrig = promoPersonalOriginal(meta);
+  const inPromoNow =
+    promoPersonalOrig !== null && isWithinPromoPeriod(task.start, meta.cycle, refToday, meta.promoPeriods);
+  const promoSavingsOrig = promoPersonalOrig !== null ? Math.max(0, personalOrig - promoPersonalOrig) : 0;
+  const primaryMon = primaryMonthlyCNY(meta);
+  const subAccMon = subAccountsTotalMonthlyCNY(meta);
+  const totalMon = primaryMon + subAccMon;
   return {
     task,
     meta,
     window,
-    personalOrig: personalPriceOriginal(meta),
+    personalOrig,
+    originalListOrig,
+    discountOrig,
+    promoPersonalOrig,
+    promoSavingsOrig,
+    inPromoNow,
     cycleCNY: cycleCostCNY(meta),
-    monthlyCNY: monthlyEquivalentCNY(meta),
-    yearlyCNY: yearlyEquivalentCNY(meta),
-    monthlySavedCNY: monthlySplitSavingsCNY(meta),
-    emblem: meta.emblem || task.title.trim().slice(0, 1).toUpperCase() || '◈',
-    brandColor: meta.brandColor || catMeta.color,
+    primaryMonthlyCNY: primaryMon,
+    subAccountsMonthlyCNY: subAccMon,
+    monthlyCNY: totalMon,
+    yearlyCNY: totalMon * 12,
+    monthlySavedCNY: totalMonthlySavingsCNY(meta),
+    totalAccountsCount: totalAccountsCount(meta),
+    emblem: meta.emblem || inferred?.emblem || task.title.trim().slice(0, 1).toUpperCase() || '◈',
+    brandKey: meta.brandKey ?? inferred?.key,
+    iconData: meta.iconData,
+    brandColor: meta.brandColor || inferred?.brandColor || catMeta.color,
     watermark: meta.watermark?.trim() || task.title,
+  };
+}
+
+/**
+ * Projects a subscription task onto its upcoming billing/due date for display in main calendar grids
+ * when `subscription.showOnCalendar` is enabled. Returns `null` when hidden, paused, or cancelled.
+ */
+export function projectSubscriptionForCalendar(task: Task, refToday: ISODate): Task | null {
+  if (!isSubscriptionTask(task)) return null;
+  const meta = task.subscription;
+  if (!meta.showOnCalendar) return null;
+  if (meta.status === 'paused' || meta.status === 'cancelled') return null;
+
+  const win = computeCycleWindow(task.start, meta.cycle, refToday);
+  const catMeta = CATEGORY_META[meta.category] ?? CATEGORY_META.other;
+  const inferred = !meta.brandKey ? inferBrandFromTitle(task.title) : undefined;
+  return {
+    ...task,
+    title: `${task.title} · 到期`,
+    start: win.nextDate,
+    end: win.nextDate,
+    time: undefined,
+    duration: undefined,
+    repeat: undefined,
+    color: task.color || meta.brandColor || inferred?.brandColor || catMeta.color,
   };
 }
 
@@ -460,7 +775,10 @@ export function summarizeMonthBilling(
     for (const d of dates) {
       const day = parts(d)[2];
       (byDay[day] ??= []).push(sub);
-      const cost = sub.meta.status === 'trial' ? 0 : sub.cycleCNY;
+      // Trials and 'ending' (auto-renew turned off) won't charge on future dates
+      const willCharge =
+        sub.meta.status === 'active' || (sub.meta.status === 'ending' && d <= refToday);
+      const cost = willCharge ? sub.cycleCNY : 0;
       monthTotalCNY += cost;
       if (d <= refToday) billedSoFarCNY += cost;
       eventCount++;
@@ -496,7 +814,7 @@ export function buildCategoryBreakdown(
   subs: ResolvedSubscription[],
   period: 'month' | 'year',
 ): CategorySlice[] {
-  const active = subs.filter((s) => s.meta.status === 'active' || s.meta.status === 'trial');
+  const active = subs.filter((s) => isSubscriptionActiveStatus(s.meta.status));
   const map = new Map<SubscriptionCategory, { count: number; amount: number }>();
 
   for (const s of active) {
@@ -549,7 +867,86 @@ export function formatShortDueDate(iso: ISODate): string {
   return `${m}月${d}日`;
 }
 
+/** Normalize a pasted/typed hex string (#RGB, RGB, #RRGGBB, RRGGBB) into uppercase #RRGGBB, or null if invalid. */
+export function normalizeHexColor(raw: string): string | null {
+  const clean = raw.trim().replace(/^#/, '');
+  if (/^[0-9a-fA-F]{3}$/.test(clean)) {
+    const [r, g, b] = clean.split('');
+    return `#${r}${r}${g}${g}${b}${b}`.toUpperCase();
+  }
+  if (/^[0-9a-fA-F]{6}$/.test(clean)) {
+    return `#${clean}`.toUpperCase();
+  }
+  return null;
+}
+
+export interface ParsedQuickSubscription {
+  title: string;
+  price: number;
+  currency?: SubscriptionCurrency;
+  cycle?: SubscriptionCycle;
+}
+
+/**
+ * Lightweight shorthand parser for effortless entry:
+ * e.g. "网易云 15", "ChatGPT 20$", "Netflix 68/年", "iCloud ¥21 月".
+ * Carefully avoids false positives on product names like "iCloud+ 2TB" or "Office 365".
+ */
+export function parseQuickSubscriptionText(raw: string): ParsedQuickSubscription | null {
+  const text = raw.trim();
+  if (!text || text.length < 3) return null;
+
+  // Match: <title> <sep> [currency-prefix] <number> [currency-suffix] [optional /cycle]
+  const m = text.match(
+    /^(.+?)\s+(HK\$|US\$|\$|¥|￥|€|£)?\s*(\d+(?:\.\d{1,2})?)\s*(元|块|rmb|cny|usd|hkd|eur|gbp|jpy|\$|¥|￥|€|£)?(?:\s*[/每]?\s*(周|月|季|半年|年|week|month|year))?$/i,
+  );
+  if (!m) return null;
+
+  const title = m[1].trim();
+  if (!title) return null;
+
+  const numStr = m[3];
+  const price = Number.parseFloat(numStr);
+  if (!Number.isFinite(price) || price <= 0) return null;
+
+  const pre = (m[2] ?? '').toUpperCase();
+  const suf = (m[4] ?? '').toUpperCase();
+  const cycRaw = (m[5] ?? '').toLowerCase();
+
+  // Avoid false positives on model/plan numbers without explicit currency/cycle when title ends like "Office 365" or "GPT 4"
+  if (!pre && !suf && !cycRaw && /^(365|202\d|100|4|4o|5)$/i.test(numStr) && /office|gpt|win|ios|android|pro|max/i.test(title)) {
+    return null;
+  }
+
+  let currency: SubscriptionCurrency | undefined;
+  const curTok = pre || suf;
+  if (curTok === '$' || curTok === 'US$' || curTok === 'USD') currency = 'USD';
+  else if (curTok === 'HK$' || curTok === 'HKD') currency = 'HKD';
+  else if (curTok === '€' || curTok === 'EUR') currency = 'EUR';
+  else if (curTok === '£' || curTok === 'GBP') currency = 'GBP';
+  else if (curTok === 'JPY') currency = 'JPY';
+  else if (curTok === '¥' || curTok === '￥' || curTok === '元' || curTok === '块' || curTok === 'RMB' || curTok === 'CNY') {
+    currency = 'CNY';
+  }
+
+  let cycle: SubscriptionCycle | undefined;
+  if (cycRaw === '周' || cycRaw === 'week') cycle = 'weekly';
+  else if (cycRaw === '月' || cycRaw === 'month') cycle = 'monthly';
+  else if (cycRaw === '季') cycle = 'quarterly';
+  else if (cycRaw === '半年') cycle = 'semiannual';
+  else if (cycRaw === '年' || cycRaw === 'year') cycle = 'yearly';
+
+  return { title, price, currency, cycle };
+}
+
 export function formatDueCountdown(remainDays: number, status: SubscriptionStatus): string {
+  if (status === 'paused') return '已暂停';
+  if (status === 'cancelled') return '已退订';
+  if (status === 'ending') {
+    if (remainDays === 0) return '今日到期止续';
+    if (remainDays === 1) return '明天到期止续';
+    return `${remainDays}天后止续`;
+  }
   if (status === 'trial') {
     if (remainDays === 0) return '试用今日结束';
     if (remainDays === 1) return '试用明天结束';
@@ -577,7 +974,7 @@ export function sampleSubscriptionPayloads(refToday: ISODate): Array<Partial<Tas
         category: 'media',
         status: 'active',
         autoRenew: true,
-        paymentMethod: 'Apple 订阅',
+        paymentMethod: 'Apple Pay',
         emblem: '♫',
         brandColor: '#FF2D55',
         watermark: 'Apple Music',
@@ -591,16 +988,19 @@ export function sampleSubscriptionPayloads(refToday: ISODate): Array<Partial<Tas
       subscriptionOnly: true,
       sample: true,
       subscription: {
-        price: 16.8,
+        price: 19.8,
+        discountAmount: 3,
+        promoPrice: 6.8,
+        promoPeriods: 1,
+        promoLabel: '首月特惠',
         currency: 'CNY',
         cycle: 'monthly',
         category: 'life',
         status: 'active',
         autoRenew: true,
-        paymentMethod: '微信自动扣款',
+        paymentMethod: '微信支付',
         emblem: '美',
         brandColor: '#D9A700',
-        watermark: 'Meituan',
         remindDaysBefore: 2,
       },
     },
@@ -611,6 +1011,7 @@ export function sampleSubscriptionPayloads(refToday: ISODate): Array<Partial<Tas
       subscriptionOnly: true,
       sample: true,
       subscription: {
+        plan: 'Plus',
         price: 20,
         currency: 'USD',
         cycle: 'monthly',
@@ -620,8 +1021,20 @@ export function sampleSubscriptionPayloads(refToday: ISODate): Array<Partial<Tas
         paymentMethod: 'Visa · 4242',
         emblem: '✦',
         brandColor: '#10A37F',
-        watermark: 'ChatGPT',
         remindDaysBefore: 3,
+        accounts: [
+          {
+            id: 'gpt-alt-1',
+            label: '工作副号',
+            plan: 'Plus',
+            price: 20,
+            currency: 'USD',
+            cycle: 'monthly',
+            status: 'ending',
+            autoRenew: false,
+            nextDate: addDays(refToday, 12),
+          },
+        ],
       },
     },
     {
@@ -641,7 +1054,6 @@ export function sampleSubscriptionPayloads(refToday: ISODate): Array<Partial<Tas
         paymentMethod: 'Apple Pay',
         emblem: '☁',
         brandColor: '#2563EB',
-        watermark: 'iCloud+',
         remindDaysBefore: 2,
       },
     },
@@ -661,7 +1073,6 @@ export function sampleSubscriptionPayloads(refToday: ISODate): Array<Partial<Tas
         paymentMethod: '试用护盾',
         emblem: '⚡',
         brandColor: '#E85D2A',
-        watermark: 'Raycast',
         remindDaysBefore: 1,
       },
     },
@@ -681,7 +1092,6 @@ export function sampleSubscriptionPayloads(refToday: ISODate): Array<Partial<Tas
         paymentMethod: '微信支付',
         emblem: '⌘',
         brandColor: '#0EA5E9',
-        watermark: 'Server',
         remindDaysBefore: 3,
       },
     },
@@ -696,12 +1106,11 @@ export function sampleSubscriptionPayloads(refToday: ISODate): Array<Partial<Tas
         currency: 'CNY',
         cycle: 'yearly',
         category: 'media',
-        status: 'active',
-        autoRenew: true,
-        paymentMethod: '支付宝代扣',
+        status: 'ending',
+        autoRenew: false,
+        paymentMethod: '支付宝',
         emblem: '📺',
         brandColor: '#FB7299',
-        watermark: 'Bilibili',
         remindDaysBefore: 5,
       },
     },

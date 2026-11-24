@@ -19,11 +19,14 @@ import {
 import { dayInfo } from '@/lib/lunar';
 import { flexKind } from '@/lib/flex';
 import { occurrences, type Occurrence } from '@/lib/recur';
+import { projectSubscriptionForCalendar } from '@/lib/subscriptions';
 import { addTask, setOccurrenceDone } from '@/lib/tasks';
 import { doc, taskList } from '@/stores/doc';
 import type { ISODate, Task } from '@/types';
 import { goToday, openEditor, ui } from '../desk/state';
-import DayView from '../desk/DayView.vue';
+import MobileCalicoTimeline from './MobileCalicoTimeline.vue';
+import TaskCheckButton from './TaskCheckButton.vue';
+import TodayHabitsStrip from './TodayHabitsStrip.vue';
 import { openTaskContextMenu } from './workspaceMenus';
 
 export type CalicoDetent = 'week' | 'split' | 'month';
@@ -39,8 +42,10 @@ const props = withDefaults(
 );
 
 const emit = defineEmits<{
-  openTask: [id: string];
+  openTask: [id: string, date?: ISODate];
   openCountdowns: [];
+  openHabits: [];
+  dockCompact: [compact: boolean];
   'update:subMode': [mode: CalicoSubMode];
 }>();
 
@@ -57,6 +62,7 @@ watch(
 
 function setMode(m: CalicoSubMode) {
   activeMode.value = m;
+  emit('dockCompact', false);
   emit('update:subMode', m);
 }
 
@@ -126,8 +132,10 @@ function occAccentHex(t: Task): string {
 const occurrencesByDay = computed<Record<ISODate, Occurrence[]>>(() => {
   const [rangeStart, rangeEnd] = visibleRange.value;
   const map: Record<ISODate, Occurrence[]> = {};
-  for (const t of taskList.value) {
-    if (t.countdownOnly || t.subscriptionOnly || flexKind(t)) continue;
+  for (const raw of taskList.value) {
+    if (raw.countdownOnly || raw.habitOnly || flexKind(raw)) continue;
+    const t = raw.subscriptionOnly ? projectSubscriptionForCalendar(raw, now.value) : raw;
+    if (!t) continue;
     const occs = occurrences(t, rangeStart, rangeEnd);
     for (const o of occs) {
       let cur = o.start < rangeStart ? rangeStart : o.start;
@@ -481,8 +489,96 @@ function onGrabberUp(e: PointerEvent) {
   }
 }
 
+// 1:1 Finger-Tracked Horizontal Day Swipe & Scroll-Linked Dock Auto-Hide on Agenda Sheet
+const agendaPanX = ref(0);
+const agendaSwiping = ref(false);
+let agTouchStartX = 0;
+let agTouchStartY = 0;
+let agLastX = 0;
+let agLastTs = 0;
+let agVelX = 0;
+let agAxis: 'none' | 'h' | 'v' = 'none';
+let agLastScrollTop = 0;
+let agScrollAccum = 0;
+
+function onAgendaTouchStart(e: TouchEvent) {
+  if (e.touches.length !== 1) return;
+  const t = e.touches[0];
+  agTouchStartX = t.clientX;
+  agTouchStartY = t.clientY;
+  agLastX = t.clientX;
+  agLastTs = performance.now();
+  agVelX = 0;
+  agAxis = 'none';
+  agendaSwiping.value = false;
+}
+
+function onAgendaTouchMove(e: TouchEvent) {
+  if (e.touches.length !== 1) return;
+  const t = e.touches[0];
+  const dx = t.clientX - agTouchStartX;
+  const dy = t.clientY - agTouchStartY;
+
+  if (agAxis === 'none') {
+    if (Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy) * 1.35) {
+      agAxis = 'h';
+      agendaSwiping.value = true;
+    } else if (Math.abs(dy) > 10) {
+      agAxis = 'v';
+      return;
+    } else {
+      return;
+    }
+  }
+
+  if (agAxis === 'h') {
+    e.preventDefault();
+    const nowTs = performance.now();
+    const dt = Math.max(0.004, (nowTs - agLastTs) / 1000);
+    agVelX = agVelX * 0.5 + ((t.clientX - agLastX) / dt) * 0.5;
+    agLastX = t.clientX;
+    agLastTs = nowTs;
+    agendaPanX.value = Math.max(-132, Math.min(132, dx * 0.86));
+  }
+}
+
+function onAgendaTouchEnd() {
+  if (agAxis === 'h') {
+    const projected = agendaPanX.value + agVelX * 0.14;
+    if (Math.abs(projected) > 58) {
+      const nextIso = addDays(ui.selected, projected < 0 ? 1 : -1);
+      pickCell(nextIso);
+    }
+  }
+  agAxis = 'none';
+  agendaSwiping.value = false;
+  agendaPanX.value = 0;
+}
+
+function onAgendaScroll(e: Event) {
+  const sc = e.currentTarget as HTMLElement | null;
+  if (!sc) return;
+  const cur = sc.scrollTop;
+  const delta = cur - agLastScrollTop;
+  agLastScrollTop = cur;
+  if (cur <= 18) {
+    agScrollAccum = 0;
+    emit('dockCompact', false);
+    return;
+  }
+  agScrollAccum = (delta > 0) !== (agScrollAccum > 0) ? delta : agScrollAccum + delta;
+  if (agScrollAccum > 26) {
+    agScrollAccum = 0;
+    emit('dockCompact', true);
+  } else if (agScrollAccum < -20) {
+    agScrollAccum = 0;
+    emit('dockCompact', false);
+  }
+}
+
 onBeforeUnmount(() => {
   if (boundaryTimer) clearTimeout(boundaryTimer);
+  emit('dockCompact', false);
 });
 </script>
 
@@ -638,12 +734,19 @@ onBeforeUnmount(() => {
       >
         <span class="calico-grabber-pill" aria-hidden="true" />
         <span v-if="detent === 'month' && !draggingSplit" class="calico-detent-hint">
-          {{ selectedDayHeadingText }} · {{ selectedOccurrences.length }} 项安排（向上拉或轻点展开）
+          {{ selectedDayHeadingText }} · {{ selectedOccurrences.length }} 项
         </span>
       </div>
 
       <!-- Lower Day Agenda Sheet -->
-      <section v-show="detent !== 'month' || draggingSplit" class="calico-agenda-pane">
+      <section
+        v-show="detent !== 'month' || draggingSplit"
+        class="calico-agenda-pane"
+        @touchstart="onAgendaTouchStart"
+        @touchmove="onAgendaTouchMove"
+        @touchend="onAgendaTouchEnd"
+        @touchcancel="onAgendaTouchEnd"
+      >
         <!-- Selected Day Header with Kinetic Vertical Text Flip -->
         <div class="calico-agenda-head">
           <Transition :name="dayFlipDir === 'next' ? 'calico-flip-up' : 'calico-flip-down'" mode="out-in">
@@ -660,12 +763,20 @@ onBeforeUnmount(() => {
               class="calico-today-chip"
               @click="goToday()"
             >
-              回到今天
+              今天
+            </button>
+            <button
+              type="button"
+              class="calico-today-chip calico-tl-switch"
+              title="切换时间轴"
+              @click="setMode('timeline')"
+            >
+              时间轴
             </button>
             <button
               type="button"
               class="calico-icon-add"
-              title="在所选日期新建日程"
+              title="新建日程"
               aria-label="在所选日期新建日程"
               @click="openNew(ui.selected)"
             >
@@ -675,7 +786,15 @@ onBeforeUnmount(() => {
         </div>
 
         <!-- Scrollable Day Events Feed -->
-        <div class="calico-agenda-scroll">
+        <div
+          class="calico-agenda-scroll"
+          :class="{ swiping: agendaSwiping }"
+          :style="agendaPanX !== 0 ? { transform: `translate3d(${agendaPanX.toFixed(1)}px, 0, 0)` } : undefined"
+          @scroll.passive="onAgendaScroll"
+        >
+          <!-- Compact Daily Habits Quick Check-In Strip on Mobile Today Focus -->
+          <TodayHabitsStrip :date="ui.selected" compact @open-habits="emit('openHabits')" />
+
           <!-- All-Day Banner Pills (1:1 'Release Day | All Day' style) -->
           <div v-if="selectedAllDayItems.length" class="calico-allday-list">
             <div
@@ -734,15 +853,13 @@ onBeforeUnmount(() => {
                   <strong>{{ formatStartTime(o.task.time) }}</strong>
                   <em> - {{ formatEndTime(o.task.time, o.task.duration) }}</em>
                 </span>
-                <button
-                  type="button"
-                  class="calico-row-check"
-                  :class="{ done: o.done }"
-                  :aria-label="o.done ? '标记未完成' : '标记已完成'"
-                  @click.stop="toggleOccDone(o)"
-                >
-                  <svg viewBox="0 0 12 12"><path d="M2.5 6.3 5 8.8 9.5 3.6" /></svg>
-                </button>
+                <TaskCheckButton
+                  :checked="o.done"
+                  :accent-color="occAccentHex(o.task)"
+                  :size="21"
+                  :label="o.done ? '标记未完成' : '标记已完成'"
+                  @toggle="toggleOccDone(o)"
+                />
               </div>
             </article>
           </div>
@@ -759,7 +876,7 @@ onBeforeUnmount(() => {
               v-model="quickTitle"
               type="text"
               class="calico-qf-input"
-              placeholder="添加当天日程或任务，回车保存…"
+              placeholder="添加日程或任务…"
             />
             <button v-if="quickTitle.trim()" type="submit" class="calico-qf-submit">添加</button>
           </form>
@@ -767,31 +884,37 @@ onBeforeUnmount(() => {
       </section>
     </template>
 
-    <!-- MODE B: Vertical Hourly Timeline View -->
+    <!-- MODE B: Calico Full-Bleed Multi-Touch Pinch & Pan Timeline View -->
     <section v-else class="calico-timeline-pane">
-      <div class="calico-tl-bar">
-        <div class="calico-day-title-wrap">
-          <h2 class="calico-day-title">{{ selectedDayHeadingText }}</h2>
-          <span class="calico-day-sub">{{ selectedDaySubText }}</span>
-        </div>
-        <div class="calico-tl-actions">
-          <button type="button" class="calico-today-chip" @click="setMode('split')">
-            返回月历分栏
+      <div class="calico-tl-mini-bar">
+        <button type="button" class="calico-tl-back-btn" @click="setMode('split')">
+          <FIcon name="chevronLeft" :size="12" />
+          <span>月历分栏</span>
+        </button>
+        <div class="calico-tl-mini-right">
+          <button
+            v-if="ui.selected !== now"
+            type="button"
+            class="calico-today-chip"
+            @click="goToday()"
+          >
+            今天
           </button>
           <button
             type="button"
-            class="calico-icon-add"
-            title="新建时段事项"
-            aria-label="新建时段事项"
+            class="calico-icon-add sm"
+            title="新建日程"
+            aria-label="新建日程"
             @click="openNew(ui.selected)"
           >
-            <FIcon name="add" :size="14" />
+            <FIcon name="add" :size="13" />
           </button>
         </div>
       </div>
-      <div class="calico-tl-stage">
-        <DayView />
-      </div>
+      <MobileCalicoTimeline
+        @open-task="(id, date) => emit('openTask', id, date)"
+        @dock-compact="(v) => emit('dockCompact', v)"
+      />
     </section>
   </div>
 </template>
@@ -1070,8 +1193,9 @@ onBeforeUnmount(() => {
 
 .calico-day-title-wrap {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
   min-width: 0;
 }
 
@@ -1080,13 +1204,15 @@ onBeforeUnmount(() => {
   font-size: 16.5px;
   font-weight: 760;
   letter-spacing: -0.02em;
+  line-height: 1.15;
   color: var(--ws-ink);
   white-space: nowrap;
 }
 
 .calico-day-sub {
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 540;
+  line-height: 1.2;
   color: var(--ws-ink-muted);
   white-space: nowrap;
   overflow: hidden;
@@ -1393,36 +1519,65 @@ onBeforeUnmount(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  padding: 8px 12px calc(98px + env(safe-area-inset-bottom));
-  gap: 8px;
+  padding: 0;
+  overflow: hidden;
 }
 
-.calico-tl-bar {
+.calico-tl-mini-bar {
   flex: none;
+  height: 34px;
+  padding: 2px 12px 4px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 2px 4px;
+  background: var(--ws-card-bg);
 }
 
-.calico-tl-actions {
+.calico-tl-mini-right {
   display: inline-flex;
   align-items: center;
   gap: 6px;
 }
 
-.calico-tl-stage {
-  flex: 1;
-  min-height: 0;
-  border-radius: 14px;
-  border: 1px solid var(--ws-hairline);
-  overflow: hidden;
-  background: var(--ws-card-bg);
+.calico-icon-add.sm {
+  width: 26px;
+  height: 26px;
 }
 
-.calico-tl-stage :deep(.day-view) {
-  height: 100%;
+.calico-tl-back-btn {
+  height: 26px;
+  padding: 0 10px 0 6px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--ws-stone-pill);
+  color: var(--ws-ink);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 680;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.calico-tl-back-btn:active {
+  transform: scale(0.95);
+}
+
+.calico-agenda-scroll {
+  transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+
+.calico-agenda-scroll.swiping {
+  transition: none;
+}
+
+.calico-tl-switch {
+  background: color-mix(in srgb, var(--ws-ink) 7%, transparent);
+  color: var(--ws-ink);
 }
 
 /* Kinetic Day Header Flip Transitions (matching video 00:01–00:09) */

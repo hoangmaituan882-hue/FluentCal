@@ -54,6 +54,7 @@ const overdueTasks = computed<Task[]>(() => {
     (t) =>
       !t.countdownOnly &&
       !t.subscriptionOnly &&
+      !t.habitOnly &&
       !flexKind(t) &&
       !t.repeat &&
       !t.done &&
@@ -67,7 +68,7 @@ const overdueTasks = computed<Task[]>(() => {
 const inboxTasks = computed<Task[]>(() => {
   const todayIso = now.value;
   const list = taskList.value.filter(
-    (t) => !t.countdownOnly && !t.subscriptionOnly && !!flexKind(t) && flexOpen(t, todayIso) && matchesFilter(t),
+    (t) => !t.countdownOnly && !t.subscriptionOnly && !t.habitOnly && !!flexKind(t) && flexOpen(t, todayIso) && matchesFilter(t),
   );
   return list.sort((a, b) => (sortNewest.value ? b.updatedAt - a.updatedAt : a.title.localeCompare(b.title)));
 });

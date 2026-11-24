@@ -16,6 +16,7 @@ import {
 import { addTask, saveTask, setOccurrenceDone } from '@/lib/tasks';
 import { uid } from '@/lib/uid';
 import { now } from '@/composables/now';
+import { useViewport } from '@/composables/useViewport';
 import { doc, taskList } from '@/stores/doc';
 import GroupSquircle from './GroupSquircle.vue';
 import PriorityGlyph from './PriorityGlyph.vue';
@@ -33,6 +34,7 @@ const emit = defineEmits<{
   openTask: [taskId: string];
 }>();
 
+const { isPhone } = useViewport();
 const captureText = ref('');
 const captureLink = ref('');
 const captureGroupId = ref('');
@@ -45,7 +47,7 @@ const triageItems = computed<Task[]>(() => {
   const todayIso = now.value;
   return taskList.value
     .filter((t) => {
-      if (t.countdownOnly || t.subscriptionOnly) return false;
+      if (t.countdownOnly || t.subscriptionOnly || t.habitOnly) return false;
       if (props.filterGroupId === '__ungrouped__' && t.groupId) return false;
       if (props.filterGroupId && props.filterGroupId !== '__ungrouped__' && t.groupId !== props.filterGroupId) return false;
       const b = classifyTaskBucket(t, todayIso);
@@ -224,10 +226,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
 <template>
   <div class="ws-scroll-page">
     <div class="ws-container inbox-wrap">
-      <header>
+      <header v-if="!isPhone">
         <h1 class="ws-page-title">收集箱</h1>
         <p class="ws-page-sub">{{ triageItems.length }} 项待整理 · 随手捕捉想法、链接或逾期未排事项</p>
       </header>
+      <div v-else class="inbox-phone-meta">{{ triageItems.length }} 项待整理</div>
 
       <!-- Folio Capture Card -->
       <form class="ws-card capture-card" @submit.prevent="submitCapture">
@@ -235,7 +238,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
           v-model="captureText"
           type="text"
           class="cap-input"
-          placeholder="捕捉一条想法、任务或备忘，回车快速收入收集箱…"
+          :placeholder="isPhone ? '记录一条想法或待办…' : '捕捉一条想法、任务或备忘，回车快速收入收集箱…'"
         />
         <input
           v-if="showLinkInput"
@@ -655,6 +658,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
   font-family: inherit;
   font-size: 10.5px;
   color: var(--ws-ink-secondary);
+}
+
+.inbox-phone-meta {
+  font-size: 12.5px;
+  font-weight: 560;
+  color: var(--ws-ink-muted);
+  padding: 0 2px;
 }
 
 @media (max-width: 639px) {

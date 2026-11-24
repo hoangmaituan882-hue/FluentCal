@@ -608,8 +608,15 @@ html[data-window='workspace'] body {
 
 @media (hover: none) {
   .ws-icon-circle,
-  .ws-check-circle {
+  .ws-check-circle,
+  html[data-window='workspace'] button,
+  html[data-window='workspace'] a {
     -webkit-tap-highlight-color: transparent;
+  }
+
+  .ws-scroll-page {
+    overscroll-behavior-y: contain;
+    -webkit-overflow-scrolling: touch;
   }
 }
 

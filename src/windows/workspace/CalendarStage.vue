@@ -7,24 +7,37 @@ import { isDark } from '@/composables/theme';
 import { now } from '@/composables/now';
 import { useViewport } from '@/composables/useViewport';
 import { doc, groupList, taskList } from '@/stores/doc';
+import type { ISODate } from '@/types';
 import { goToday, page, spotlightGroups, ui, viewTitle } from '../desk/state';
 import YearMonthPicker from '../desk/YearMonthPicker.vue';
 import DayView from '../desk/DayView.vue';
 import MultiDayView from '../desk/MultiDayView.vue';
 import MonthView from '../desk/MonthView.vue';
 import CountdownBar from '../desk/CountdownBar.vue';
+import MobileCalicoTimeline from './MobileCalicoTimeline.vue';
 
 type CalSubView = 'day' | 'multiday' | 'month' | 'weeks';
 
-const props = defineProps<{
-  calView: CalSubView;
-}>();
+const props = withDefaults(
+  defineProps<{
+    calView: CalSubView;
+    dockCompact?: boolean;
+  }>(),
+  {
+    dockCompact: false,
+  },
+);
 
 const emit = defineEmits<{
   'update:calView': [v: CalSubView];
+  openTask: [taskId: string, date?: ISODate];
+  dockCompact: [compact: boolean];
 }>();
 
 const { isPhone, isTouch } = useViewport();
+const useMobileTimeline = computed(
+  () => isPhone.value && (props.calView === 'day' || props.calView === 'multiday'),
+);
 const calTitleRef = ref<HTMLElement | null>(null);
 const ymOpen = ref(false);
 
@@ -79,7 +92,7 @@ onBeforeUnmount(() => {
 });
 
 const hasUngrouped = computed(() =>
-  taskList.value.some((t) => !t.countdownOnly && !t.subscriptionOnly && (!t.groupId || !doc.groups[t.groupId])),
+  taskList.value.some((t) => !t.countdownOnly && !t.subscriptionOnly && !t.habitOnly && (!t.groupId || !doc.groups[t.groupId])),
 );
 
 const filterPills = computed(() => {
@@ -161,8 +174,14 @@ function clearSpotlight() {
       </div>
     </header>
 
-    <div class="ws-card-frame ws-cal-frame">
-      <DayView v-if="calView === 'day'" />
+    <div class="ws-card-frame ws-cal-frame" :class="{ 'calico-tl-host': useMobileTimeline }">
+      <MobileCalicoTimeline
+        v-if="useMobileTimeline"
+        :initial-days="calView === 'day' ? 1 : 3"
+        @open-task="(id, date) => emit('openTask', id, date)"
+        @dock-compact="(v) => emit('dockCompact', v)"
+      />
+      <DayView v-else-if="calView === 'day'" />
       <MultiDayView v-else-if="calView === 'multiday'" />
       <MonthView v-else :mode="calView === 'weeks' ? 'weeks' : 'month'" />
       <CountdownBar v-if="calView === 'month' || calView === 'weeks'" />
@@ -172,7 +191,7 @@ function clearSpotlight() {
     <div
       v-if="filterPills.length >= 2 || groupList.length > 0"
       class="cal-filter-float"
-      :class="{ 'has-cd': hasBottomCountdownBar }"
+      :class="{ 'has-cd': hasBottomCountdownBar, 'dock-compact': dockCompact }"
       role="group"
       aria-label="悬停聚光预览，点击筛选分类日程"
       @pointerleave="onPillListLeave"
@@ -414,13 +433,21 @@ function clearSpotlight() {
   padding-bottom: calc(74px + env(safe-area-inset-bottom));
 }
 
+.ws-cal-stage.phone .ws-cal-frame.calico-tl-host {
+  padding-bottom: 0;
+}
+
 .ws-cal-stage.phone .cal-filter-float {
-  bottom: calc(78px + env(safe-area-inset-bottom));
+  bottom: calc(98px + env(safe-area-inset-bottom));
   max-width: calc(100% - 16px);
 }
 
+.ws-cal-stage.phone .cal-filter-float.dock-compact {
+  bottom: calc(56px + env(safe-area-inset-bottom));
+}
+
 .ws-cal-stage.phone .cal-filter-float.has-cd {
-  bottom: calc(104px + env(safe-area-inset-bottom));
+  bottom: calc(124px + env(safe-area-inset-bottom));
 }
 
 .cal-filter-float {

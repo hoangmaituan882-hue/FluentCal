@@ -8,6 +8,7 @@ import { displayInfo as dayInfo } from '@/lib/lunar';
 import { deleteTask, saveTask } from '@/lib/tasks';
 import { isDark } from '@/composables/theme';
 import { now } from '@/composables/now';
+import { useViewport } from '@/composables/useViewport';
 import { doc, patchSettings, taskList } from '@/stores/doc';
 import { notify } from '../desk/state';
 import CountdownEditorModal from '../desk/CountdownEditorModal.vue';
@@ -16,6 +17,7 @@ import { openCountdownContextMenu } from './workspaceMenus';
 
 type FilterKind = 'all' | 'custom' | 'down' | 'up' | 'system';
 
+const { isPhone } = useViewport();
 const filter = ref<FilterKind>('all');
 const filterRef = ref<HTMLElement>();
 const editorOpen = ref(false);
@@ -148,14 +150,16 @@ function dayPhrase(days: number, mode: 'down' | 'up', expired: boolean): { prefi
   <div class="ws-scroll-page">
     <div class="ws-container cd-page">
       <!-- Editorial Header -->
-      <header class="cd-page-head">
+      <header class="cd-page-head" :class="{ phone: isPhone }">
         <div>
-          <h1 class="ws-page-title">倒数日</h1>
-          <p class="ws-page-sub">{{ customItems.length }} 个自定义倒数与纪念日 · {{ systemItems.length }} 个近期节日节气</p>
+          <h1 v-if="!isPhone" class="ws-page-title">倒数日</h1>
+          <p class="ws-page-sub">
+            {{ customItems.length }} 个自定义 · {{ systemItems.length }} 个近期节日
+          </p>
         </div>
         <button type="button" class="ws-cta-btn" @click="openCreate">
           <FIcon name="add" :size="13" />
-          <span>新建倒数日</span>
+          <span>{{ isPhone ? '新建' : '新建倒数日' }}</span>
         </button>
       </header>
 

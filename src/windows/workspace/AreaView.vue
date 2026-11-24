@@ -123,7 +123,7 @@ const groupTasks = computed(() => {
   const q = props.searchQuery.trim().toLowerCase();
   return taskList.value
     .filter((t) => {
-      if (t.countdownOnly || t.subscriptionOnly || t.groupId !== props.groupId) return false;
+      if (t.countdownOnly || t.subscriptionOnly || t.habitOnly || t.groupId !== props.groupId) return false;
       if (q && !t.title.toLowerCase().includes(q) && !t.notes?.toLowerCase().includes(q)) return false;
       return true;
     })

@@ -409,7 +409,8 @@ function groupHex(g: Group): string {
       :class="{ focused: barFocused || popOpen }"
       @click="inputRef?.focus()"
     >
-      <svg class="tfb-sparkle" width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <FIcon v-if="isPhone" name="search" :size="14" class="tfb-phone-search-ico" />
+      <svg v-else class="tfb-sparkle" width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
         <path
           d="M8 1.5 9.35 5.65 13.5 7 9.35 8.35 8 12.5 6.65 8.35 2.5 7 6.65 5.65Z"
           fill="url(#tfbSpark)"
@@ -460,7 +461,7 @@ function groupHex(g: Group): string {
         :value="searchQuery"
         type="text"
         class="tfb-input"
-        :placeholder="tokens.length ? '继续输入关键词或点击左侧“筛选”…' : '筛选或搜索任务标题、编号、备注…'"
+        :placeholder="isPhone ? '搜索任务…' : tokens.length ? '继续输入关键词或点击左侧“筛选”…' : '筛选或搜索任务标题、编号、备注…'"
         @focus="barFocused = true"
         @blur="barFocused = false"
         @input="onSearchInput"
@@ -804,6 +805,11 @@ function groupHex(g: Group): string {
 }
 
 .tfb-sparkle {
+  flex: none;
+}
+
+.tfb-phone-search-ico {
+  color: var(--ws-ink-muted);
   flex: none;
 }
 

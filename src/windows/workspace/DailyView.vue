@@ -26,6 +26,7 @@ import { useSlidingIndicator } from './useSlidingIndicator';
 import MobileCalicoStage from './MobileCalicoStage.vue';
 import NumberPop from './NumberPop.vue';
 import TaskCheckButton from './TaskCheckButton.vue';
+import TodayHabitsStrip from './TodayHabitsStrip.vue';
 import WorkspaceInboxRail from './WorkspaceInboxRail.vue';
 import { openTaskContextMenu, STATUS_DOT_COLOR } from './workspaceMenus';
 import {
@@ -51,7 +52,9 @@ const emit = defineEmits<{
   openGroup: [groupId: string];
   openCountdowns: [];
   openSubscriptions: [];
+  openHabits: [];
   toggleInboxRail: [];
+  dockCompact: [compact: boolean];
 }>();
 
 const quickTitle = ref('');
@@ -169,7 +172,7 @@ const stripDotColors = computed<Record<ISODate, string[]>>(() => {
   const end = stripDays.value[stripDays.value.length - 1];
   const map: Record<ISODate, string[]> = {};
   for (const t of taskList.value) {
-    if (t.countdownOnly || t.subscriptionOnly || flexKind(t)) continue;
+    if (t.countdownOnly || t.subscriptionOnly || t.habitOnly || flexKind(t)) continue;
     const key = t.color || (t.groupId ? doc.groups[t.groupId]?.color : '') || '';
     const hex = key ? taskColor(key, isDark.value).bar : '#E84C3D';
     for (const o of occurrences(t, start, end)) {
@@ -190,7 +193,7 @@ const dayOccurrences = computed<Occurrence[]>(() => {
   const d = selectedDate.value;
   const out: Occurrence[] = [];
   for (const t of taskList.value) {
-    if (t.countdownOnly || t.subscriptionOnly || flexKind(t)) continue;
+    if (t.countdownOnly || t.subscriptionOnly || t.habitOnly || flexKind(t)) continue;
     out.push(...occurrences(t, d, d));
   }
   out.sort((a, b) => {
@@ -436,8 +439,10 @@ onBeforeUnmount(() => {
     <!-- Dedicated Calico 3-Detent Split Calendar & Agenda Stage on Phone (< 640px) -->
     <MobileCalicoStage
       v-if="isPhone"
-      @open-task="(id) => emit('openTask', id)"
+      @open-task="(id, date) => emit('openTask', id, date)"
       @open-countdowns="emit('openCountdowns')"
+      @open-habits="emit('openHabits')"
+      @dock-compact="(v) => emit('dockCompact', v)"
     />
 
     <!-- Woday Dual Floating White Sheets on Desktop / Tablet -->
@@ -590,6 +595,9 @@ onBeforeUnmount(() => {
                 </button>
               </div>
             </div>
+
+            <!-- Compact Daily Habits Quick Check-In Strip (renders only when habits exist) -->
+            <TodayHabitsStrip :date="selectedDate" @open-habits="emit('openHabits')" />
 
             <!-- Unified Chronological Stream + Directional Day Carousel + FLIP Reflow -->
             <Transition :name="daySlideDir === 'next' ? 't-day-next' : 't-day-prev'" mode="out-in">

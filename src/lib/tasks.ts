@@ -139,7 +139,7 @@ export function duplicateTask(t: Task): Promise<Task> {
 export function autoPostpone(now: ISODate = today()): Promise<void> | undefined {
   const items: Record<string, Task> = {};
   for (const t of Object.values(doc.tasks)) {
-    if (t.done || t.repeat || t.flex || t.countdownOnly || t.subscriptionOnly || t.start !== t.end) continue;
+    if (t.done || t.repeat || t.flex || t.countdownOnly || t.subscriptionOnly || t.habitOnly || t.start !== t.end) continue;
     if (!(t.autoPostpone ?? doc.settings.tasks.autoPostpone)) continue;
     const late = diffDays(t.end, now);
     if (late <= 0 || late > 30) continue;

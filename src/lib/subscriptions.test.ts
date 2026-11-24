@@ -4,8 +4,12 @@ import {
   billingDatesInMonth,
   buildCategoryBreakdown,
   computeCycleWindow,
+  formatDueCountdown,
   monthlyEquivalentCNY,
   monthlySplitSavingsCNY,
+  normalizeHexColor,
+  parseQuickSubscriptionText,
+  projectSubscriptionForCalendar,
   resolveSubscription,
   summarizeMonthBilling,
   yearlyEquivalentCNY,
@@ -102,5 +106,115 @@ describe('subscriptions engine', () => {
     const breakdown = buildCategoryBreakdown([s1, s2, sPaused], 'month');
     expect(breakdown.map((b) => b.category)).toEqual(['life', 'ai']);
     expect(Math.round(breakdown.reduce((a, b) => a + b.percent, 0))).toBe(100);
+  });
+
+  it('defaults card watermark to the exact subscription title and projects due dates onto main calendar', () => {
+    const netease = makeSubTask('网易云音乐', '2026-10-28', {
+      price: 15,
+      currency: 'CNY',
+      cycle: 'monthly',
+      category: 'media',
+      showOnCalendar: true,
+    });
+    const resolved = resolveSubscription(netease, '2026-11-24');
+    expect(resolved.watermark).toBe('网易云音乐');
+    expect(resolved.brandKey).toBe('netease-music');
+
+    const projected = projectSubscriptionForCalendar(netease, '2026-11-24');
+    expect(projected?.start).toBe('2026-11-28');
+    expect(projected?.end).toBe('2026-11-28');
+    expect(projected?.title).toBe('网易云音乐 · 到期');
+
+    const hidden = makeSubTask('HiddenSub', '2026-10-28', { showOnCalendar: false });
+    expect(projectSubscriptionForCalendar(hidden, '2026-11-24')).toBeNull();
+  });
+
+  it('normalizes pasted #Hex color inputs and parses quick subscription shorthand safely', () => {
+    expect(normalizeHexColor('#d43c33')).toBe('#D43C33');
+    expect(normalizeHexColor(' 1db954 ')).toBe('#1DB954');
+    expect(normalizeHexColor('#f0a')).toBe('#FF00AA');
+    expect(normalizeHexColor('not-a-color')).toBeNull();
+
+    expect(parseQuickSubscriptionText('网易云音乐 15')).toEqual({
+      title: '网易云音乐',
+      price: 15,
+      currency: undefined,
+      cycle: undefined,
+    });
+    expect(parseQuickSubscriptionText('ChatGPT Plus 20$')).toEqual({
+      title: 'ChatGPT Plus',
+      price: 20,
+      currency: 'USD',
+      cycle: undefined,
+    });
+    expect(parseQuickSubscriptionText('Netflix ¥68/年')).toEqual({
+      title: 'Netflix',
+      price: 68,
+      currency: 'CNY',
+      cycle: 'yearly',
+    });
+    // Must not falsely split product names like Office 365 or iCloud+ 2TB
+    expect(parseQuickSubscriptionText('Office 365')).toBeNull();
+    expect(parseQuickSubscriptionText('iCloud+ 2TB')).toBeNull();
+  });
+
+  it('calculates ending status, recurring discounts, first-month promos, and multi-account AI sub-subscriptions', () => {
+    const promoSub = resolveSubscription(
+      makeSubTask('美团神会员', '2026-11-10', {
+        price: 19.8,
+        discountAmount: 3,
+        promoPrice: 6.8,
+        promoPeriods: 1,
+        currency: 'CNY',
+        cycle: 'monthly',
+        category: 'life',
+        status: 'active',
+        autoRenew: true,
+      }),
+      '2026-11-24',
+    );
+    expect(promoSub.originalListOrig).toBeCloseTo(19.8, 2);
+    expect(promoSub.personalOrig).toBeCloseTo(16.8, 2);
+    expect(promoSub.discountOrig).toBeCloseTo(3, 2);
+    expect(promoSub.promoPersonalOrig).toBeCloseTo(6.8, 2);
+    expect(promoSub.promoSavingsOrig).toBeCloseTo(10, 2);
+    expect(promoSub.inPromoNow).toBe(true);
+    expect(promoSub.monthlySavedCNY).toBeCloseTo(3, 2);
+
+    const aiMulti = resolveSubscription(
+      makeSubTask('ChatGPT Plus', '2026-11-26', {
+        price: 20,
+        currency: 'USD',
+        cycle: 'monthly',
+        category: 'ai',
+        status: 'active',
+        autoRenew: true,
+        accounts: [
+          { id: 'alt-1', label: '工作副号', plan: 'Plus', price: 20, status: 'ending', autoRenew: false },
+          { id: 'alt-2', label: '已停号', plan: 'Pro', price: 200, status: 'paused', autoRenew: false },
+        ],
+      }),
+      '2026-11-24',
+    );
+    expect(aiMulti.totalAccountsCount).toBe(3);
+    expect(aiMulti.primaryMonthlyCNY).toBeCloseTo(20 * 7.25, 2);
+    expect(aiMulti.subAccountsMonthlyCNY).toBeCloseTo(20 * 7.25, 2);
+    expect(aiMulti.monthlyCNY).toBeCloseTo(40 * 7.25, 2);
+
+    const endingSub = resolveSubscription(
+      makeSubTask('B站大会员', '2026-11-28', {
+        price: 148,
+        currency: 'CNY',
+        cycle: 'yearly',
+        status: 'ending',
+        autoRenew: false,
+      }),
+      '2026-11-24',
+    );
+    expect(formatDueCountdown(endingSub.window.remainDays, 'ending')).toBe('4天后止续');
+    // Ending subscription does not charge on future dates in monthly billing summary
+    const sum = summarizeMonthBilling([endingSub], 2026, 11, '2026-11-24');
+    expect(sum.remainingMonthCNY).toBe(0);
+    expect(sum.eventCount).toBe(1);
   });
 });

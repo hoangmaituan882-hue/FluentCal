@@ -10,17 +10,24 @@ import { goToday, ui } from '../desk/state';
 import { useSlidingIndicator } from './useSlidingIndicator';
 import type { WorkspacePageKind } from './workspaceModel';
 
-const props = defineProps<{
-  activeKind: WorkspacePageKind;
-  inboxCount: number;
-  openCount: number;
-}>();
+const props = withDefaults(
+  defineProps<{
+    activeKind: WorkspacePageKind;
+    inboxCount: number;
+    openCount: number;
+    compact?: boolean;
+  }>(),
+  {
+    compact: false,
+  },
+);
 
 const emit = defineEmits<{
   navigate: [kind: WorkspacePageKind];
   quickCapture: [];
   openDrawer: [];
   openTask: [id: string];
+  expand: [];
 }>();
 
 const trackRef = ref<HTMLElement>();
@@ -40,7 +47,7 @@ onBeforeUnmount(() => {
 const { style: thumbStyle, ready: thumbReady, visible: thumbVisible } = useSlidingIndicator(
   trackRef,
   '.wmd-tab.active',
-  [() => props.activeKind],
+  [() => props.activeKind, () => props.compact],
 );
 
 const inboxBadge = computed(() => {
@@ -64,7 +71,7 @@ const upNextInfo = computed<UpNextInfo>(() => {
   const todayAny: Task[] = [];
 
   for (const t of taskList.value) {
-    if (t.countdownOnly || t.subscriptionOnly || flexKind(t)) continue;
+    if (t.countdownOnly || t.subscriptionOnly || t.habitOnly || flexKind(t)) continue;
     const occs = occurrences(t, todayIso, todayIso);
     for (const o of occs) {
       if (o.done) continue;
@@ -116,7 +123,7 @@ const upNextInfo = computed<UpNextInfo>(() => {
   // Fallback to selected date occurrences if viewing another day
   if (ui.selected !== todayIso) {
     for (const t of taskList.value) {
-      if (t.countdownOnly || t.subscriptionOnly || flexKind(t)) continue;
+      if (t.countdownOnly || t.subscriptionOnly || t.habitOnly || flexKind(t)) continue;
       const occs = occurrences(t, ui.selected, ui.selected);
       const openOcc = occs.find((o) => !o.done);
       if (openOcc) {
@@ -134,11 +141,19 @@ const upNextInfo = computed<UpNextInfo>(() => {
 });
 
 function onClockClick() {
+  if (props.compact) {
+    emit('expand');
+    return;
+  }
   goToday();
   emit('navigate', 'daily');
 }
 
 function onUpNextClick() {
+  if (props.compact) {
+    emit('expand');
+    return;
+  }
   const info = upNextInfo.value;
   if (info.task) {
     emit('openTask', info.task.id);
@@ -149,69 +164,73 @@ function onUpNextClick() {
 </script>
 
 <template>
-  <nav class="wm-dock" aria-label="主导航">
-    <!-- Tier 1: Calico Recessed Segmented View Switcher Track -->
-    <div ref="trackRef" class="wmd-track">
-      <span
-        v-if="thumbVisible"
-        class="ws-slide-pill wmd-thumb"
-        :class="{ 'no-anim': !thumbReady }"
-        :style="thumbStyle"
-        aria-hidden="true"
-      />
+  <nav class="wm-dock" :class="{ compact }" aria-label="主导航">
+    <!-- Tier 1: Calico Recessed Segmented View Switcher Track (scroll-linked collapse) -->
+    <div class="wmd-track-collapse">
+      <div class="wmd-track-inner">
+        <div ref="trackRef" class="wmd-track">
+          <span
+            v-if="thumbVisible"
+            class="ws-slide-pill wmd-thumb"
+            :class="{ 'no-anim': !thumbReady }"
+            :style="thumbStyle"
+            aria-hidden="true"
+          />
 
-      <button
-        type="button"
-        class="wmd-tab"
-        :class="{ active: activeKind === 'daily' }"
-        @click="emit('navigate', 'daily')"
-      >
-        <span class="wmd-ico-wrap">
-          <!-- Calico Split-View Icon (two stacked rounded panes) -->
-          <svg class="wmd-calico-svg" viewBox="0 0 16 16" aria-hidden="true">
-            <rect x="2.25" y="2.25" width="11.5" height="11.5" rx="2.6" />
-            <line x1="2.5" y1="8" x2="13.5" y2="8" />
-          </svg>
-        </span>
-        <span class="wmd-lbl">今日</span>
-      </button>
+          <button
+            type="button"
+            class="wmd-tab"
+            :class="{ active: activeKind === 'daily' }"
+            @click="emit('navigate', 'daily')"
+          >
+            <span class="wmd-ico-wrap">
+              <!-- Calico Split-View Icon (two stacked rounded panes) -->
+              <svg class="wmd-calico-svg" viewBox="0 0 16 16" aria-hidden="true">
+                <rect x="2.25" y="2.25" width="11.5" height="11.5" rx="2.6" />
+                <line x1="2.5" y1="8" x2="13.5" y2="8" />
+              </svg>
+            </span>
+            <span class="wmd-lbl">今日</span>
+          </button>
 
-      <button
-        type="button"
-        class="wmd-tab"
-        :class="{ active: activeKind === 'calendar' }"
-        @click="emit('navigate', 'calendar')"
-      >
-        <span class="wmd-ico-wrap">
-          <FIcon name="calendar" :size="15" />
-        </span>
-        <span class="wmd-lbl">日历</span>
-      </button>
+          <button
+            type="button"
+            class="wmd-tab"
+            :class="{ active: activeKind === 'calendar' }"
+            @click="emit('navigate', 'calendar')"
+          >
+            <span class="wmd-ico-wrap">
+              <FIcon name="calendar" :size="15" />
+            </span>
+            <span class="wmd-lbl">日历</span>
+          </button>
 
-      <button
-        type="button"
-        class="wmd-tab"
-        :class="{ active: activeKind === 'tasks' }"
-        @click="emit('navigate', 'tasks')"
-      >
-        <span class="wmd-ico-wrap">
-          <FIcon name="checklist" :size="15" />
-        </span>
-        <span class="wmd-lbl">待办</span>
-      </button>
+          <button
+            type="button"
+            class="wmd-tab"
+            :class="{ active: activeKind === 'tasks' }"
+            @click="emit('navigate', 'tasks')"
+          >
+            <span class="wmd-ico-wrap">
+              <FIcon name="checklist" :size="15" />
+            </span>
+            <span class="wmd-lbl">待办</span>
+          </button>
 
-      <button
-        type="button"
-        class="wmd-tab"
-        :class="{ active: activeKind === 'inbox' }"
-        @click="emit('navigate', 'inbox')"
-      >
-        <span class="wmd-ico-wrap">
-          <FIcon name="flag" :size="15" />
-          <span v-if="inboxBadge" class="wmd-badge">{{ inboxBadge }}</span>
-        </span>
-        <span class="wmd-lbl">收集箱</span>
-      </button>
+          <button
+            type="button"
+            class="wmd-tab"
+            :class="{ active: activeKind === 'inbox' }"
+            @click="emit('navigate', 'inbox')"
+          >
+            <span class="wmd-ico-wrap">
+              <FIcon name="flag" :size="15" />
+              <span v-if="inboxBadge" class="wmd-badge">{{ inboxBadge }}</span>
+            </span>
+            <span class="wmd-lbl">收集箱</span>
+          </button>
+        </div>
+      </div>
     </div>
 
     <!-- Tier 2: Calico Live 'Up Next' Ticker & Quick Actions Bar -->
@@ -219,8 +238,8 @@ function onUpNextClick() {
       <button
         type="button"
         class="wmd-clock-btn"
-        title="回到今天"
-        aria-label="回到今天"
+        :title="compact ? '展开底部导航' : '回到今天'"
+        :aria-label="compact ? '展开底部导航' : '回到今天'"
         @click="onClockClick"
       >
         <svg viewBox="0 0 16 16" class="wmd-clock-svg" aria-hidden="true">
@@ -232,7 +251,7 @@ function onUpNextClick() {
       <button
         type="button"
         class="wmd-upnext-btn"
-        :title="upNextInfo.label"
+        :title="compact ? '轻点展开导航栏' : upNextInfo.label"
         @click="onUpNextClick"
       >
         <span class="wmd-upnext-txt">{{ upNextInfo.label }}</span>
@@ -240,24 +259,37 @@ function onUpNextClick() {
 
       <div class="wmd-right-btns">
         <button
+          v-if="compact"
           type="button"
-          class="wmd-add"
-          title="快速新建任务"
-          aria-label="快速新建任务"
-          @click="emit('quickCapture')"
+          class="wmd-expand-btn"
+          title="展开完整导航"
+          aria-label="展开完整导航"
+          @click="emit('expand')"
         >
-          <FIcon name="add" :size="14" />
+          <FIcon name="chevronUp" :size="13" />
         </button>
 
-        <button
-          type="button"
-          class="wmd-more-btn"
-          title="打开全部导航与分组"
-          aria-label="打开全部导航与分组"
-          @click="emit('openDrawer')"
-        >
-          <FIcon name="more" :size="15" />
-        </button>
+        <template v-else>
+          <button
+            type="button"
+            class="wmd-add"
+            title="快速新建任务"
+            aria-label="快速新建任务"
+            @click="emit('quickCapture')"
+          >
+            <FIcon name="add" :size="14" />
+          </button>
+
+          <button
+            type="button"
+            class="wmd-more-btn"
+            title="打开全部导航与分组"
+            aria-label="打开全部导航与分组"
+            @click="emit('openDrawer')"
+          >
+            <FIcon name="more" :size="15" />
+          </button>
+        </template>
       </div>
     </div>
   </nav>
@@ -282,6 +314,63 @@ function onUpNextClick() {
   backdrop-filter: blur(24px) saturate(165%);
   border: 1px solid var(--ws-dock-border);
   box-shadow: var(--ws-dock-shadow);
+  transition:
+    width 280ms var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1)),
+    max-width 280ms var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1)),
+    padding 240ms var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1)),
+    gap 220ms ease,
+    border-radius 240ms ease,
+    box-shadow 240ms ease;
+}
+
+.wm-dock.compact {
+  width: min(296px, calc(100% - 44px));
+  max-width: 296px;
+  padding: 4px 8px;
+  gap: 0;
+  border-radius: 999px;
+}
+
+.wmd-track-collapse {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  transition:
+    grid-template-rows 240ms var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1)),
+    opacity 180ms ease,
+    transform 240ms var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1));
+}
+
+.wm-dock.compact .wmd-track-collapse {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transform: translateY(6px) scale(0.95);
+  pointer-events: none;
+}
+
+.wmd-track-inner {
+  overflow: hidden;
+}
+
+.wmd-expand-btn {
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ws-ink) 8%, transparent);
+  color: var(--ws-ink-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 120ms ease, background-color 140ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.wmd-expand-btn:active {
+  transform: scale(0.9);
+  background: color-mix(in srgb, var(--ws-ink) 14%, transparent);
 }
 
 /* Tier 1: Recessed Segmented Pill Track */

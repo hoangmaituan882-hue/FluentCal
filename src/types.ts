@@ -32,22 +32,66 @@ export type TaskPriority = 'none' | 'low' | 'medium' | 'high' | 'urgent';
 export type SubscriptionCycle = 'weekly' | 'monthly' | 'quarterly' | 'semiannual' | 'yearly';
 export type SubscriptionCurrency = 'CNY' | 'USD' | 'HKD' | 'EUR' | 'JPY' | 'GBP';
 export type SubscriptionCategory = 'ai' | 'cloud' | 'media' | 'life' | 'work' | 'other';
-export type SubscriptionStatus = 'active' | 'trial' | 'paused' | 'cancelled';
+/**
+ * active    = 订阅中（按周期自动续费或持续订阅）
+ * ending    = 已关续费（已付费生效中，但关闭了自动续费，本期到期即止）
+ * trial     = 试用中（试用护盾）
+ * paused    = 已暂停
+ * cancelled = 已退订
+ */
+export type SubscriptionStatus = 'active' | 'ending' | 'trial' | 'paused' | 'cancelled';
+
+export interface SubscriptionSubAccount {
+  id: string;
+  /** Account nickname / email label, e.g. "工作号", "备用美区号" */
+  label: string;
+  /** Optional tier / plan name, e.g. "Plus", "Pro", "Max 5x", "Team", "API" */
+  plan?: string;
+  /** Price per billing cycle (in `currency` or parent's currency). */
+  price: number;
+  currency?: SubscriptionCurrency;
+  cycle?: SubscriptionCycle;
+  status?: SubscriptionStatus;
+  autoRenew?: boolean;
+  /** Optional independent due/expiry date for this sub-account. */
+  nextDate?: ISODate;
+  /** Optional recurring discount off per cycle. */
+  discountAmount?: number;
+  /** Optional introductory / first-period promotional price. */
+  promoPrice?: number;
+  note?: string;
+}
 
 export interface SubscriptionMeta {
-  /** Original price per billing cycle (before split-bill division). */
+  /** Original price per billing cycle (before discount & split-bill division). */
   price: number;
   currency: SubscriptionCurrency;
   cycle: SubscriptionCycle;
   category: SubscriptionCategory;
   status: SubscriptionStatus;
   autoRenew: boolean;
+  /** Optional plan / tier label, e.g. "Plus", "Pro", "Max", "黑胶VIP". */
+  plan?: string;
+  /** Recurring discount / coupon off per billing cycle in `currency` (e.g. ¥5 off ¥20 -> ¥15). */
+  discountAmount?: number;
+  /** Introductory / first-period promotional price in `currency` (e.g. 首月 ¥1). */
+  promoPrice?: number;
+  /** Number of initial cycles covered by `promoPrice` (default 1 = 首月/首期优惠). */
+  promoPeriods?: number;
+  /** Optional custom label for the discount or intro promo (e.g. "首月特惠", "学生价"). */
+  promoLabel?: string;
+  /** Additional child sub-subscriptions / accounts under the same service (e.g. multiple ChatGPT/Claude accounts). */
+  accounts?: SubscriptionSubAccount[];
   /** Split bill across N people (default 1 = personal; e.g. 6 = family split, pays 1/6). */
   splitCount?: number;
   /** Payment channel note (e.g. 'Apple 订阅', '微信自动扣款', 'Visa 4242'). */
   paymentMethod?: string;
   /** Compact emblem glyph/monogram displayed on calendar & membership cards. */
   emblem?: string;
+  /** Built-in curated brand key (e.g. 'chatgpt', 'bilibili', 'spotify') for crisp offline SVG rendering. */
+  brandKey?: string;
+  /** Inline Data URL (data:image/webp|png|svg+xml;base64,...) cached locally after online search or upload. */
+  iconData?: string;
   /** Custom hex or preset brand color for gradient cards & badges. */
   brandColor?: string;
   /** Optional giant background watermark text for editorial cards. */
@@ -56,6 +100,32 @@ export interface SubscriptionMeta {
   remindDaysBefore?: number;
   /** Optional: also expose renewal events on the main calendar grid. */
   showOnCalendar?: boolean;
+}
+
+export type HabitKind = 'check' | 'count' | 'quit';
+export type HabitTimeOfDay = 'anytime' | 'morning' | 'afternoon' | 'evening';
+/** Per-day habit log: positive number = count/check, 'skip' = rest day (anti-guilt), 'relapse' = quit slip. */
+export type HabitLogValue = number | 'skip' | 'relapse';
+
+export interface HabitMeta {
+  kind: HabitKind;
+  /** Target per day for `count` habits (e.g. 8 cups, 30 mins). Default 1 for `check`/`quit`. */
+  target: number;
+  /** Quick increment step per tap on `count` habits (e.g. 1, 10, 250). Default 1. */
+  step?: number;
+  /** Display unit for `count` habits (e.g. '杯', '分钟', '步', '页'). */
+  unit?: string;
+  /** Elastic weekly quota (1..7; 7 = daily, e.g. 3 = "每周 3 次"). */
+  weeklyTarget: number;
+  timeOfDay: HabitTimeOfDay;
+  /** Built-in curated vector icon key (e.g. 'water', 'book', 'meditate', 'moon'). */
+  iconKey?: string;
+  /** Hex theme color driving Fushi tonal card & HabitKit heatmap tiles. */
+  color: string;
+  /** Archived habits are hidden from the daily grid while keeping full history. */
+  archived?: boolean;
+  /** Daily completion map keyed by YYYY-MM-DD. */
+  logs: Record<ISODate, HabitLogValue>;
 }
 
 export interface TaskCheckItem {
@@ -128,6 +198,10 @@ export interface Task {
   subscriptionOnly?: boolean;
   /** Structured billing/cycle/currency metadata for subscription records. */
   subscription?: SubscriptionMeta;
+  /** Standalone daily habit record (shown in HabitView & Today Quick Strip, hidden from todo/inbox/calendar/gantt). */
+  habitOnly?: boolean;
+  /** Structured frequency, icon, logs & anti-guilt metadata for daily habits. */
+  habit?: HabitMeta;
   /** Overrides settings.tasks.autoPostpone for this task. */
   autoPostpone?: boolean;
   /** First-run sample data ("清除示例数据" removes it); dropped once the user renames it. */

@@ -12,6 +12,7 @@ import {
   type SpotlightVisualState,
 } from '@/lib/filter';
 import { doc, patchSettings, storeState, taskList } from '@/stores/doc';
+import { projectSubscriptionForCalendar } from '@/lib/subscriptions';
 import { now } from '@/composables/now';
 import { occurrenceOn, occurrences } from '@/lib/recur';
 
@@ -98,9 +99,17 @@ export function clusterSpotlightStateOf(tasks: readonly Task[]): SpotlightVisual
  * Gantt chart take all of them. */
 export const shownTasks = computed(() => {
   const f = groupFilter.value;
-  const visible = taskList.value.filter(
-    (t) => !t.countdownOnly && (!t.subscriptionOnly || !!t.subscription?.showOnCalendar),
-  );
+  const todayIso = now.value;
+  const visible: Task[] = [];
+  for (const t of taskList.value) {
+    if (t.countdownOnly || t.habitOnly) continue;
+    if (t.subscriptionOnly) {
+      const projected = projectSubscriptionForCalendar(t, todayIso);
+      if (projected) visible.push(projected);
+      continue;
+    }
+    visible.push(t);
+  }
   return f.length ? visible.filter((t) => t.id === ui.revealTask || shown(doc.groups, f, t)) : visible;
 });
 

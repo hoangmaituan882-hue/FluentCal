@@ -1,0 +1,2 @@
+const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["assets/web-DOtc7_Sc.js","assets/index-B2fX77d7.js","assets/reactivity.esm-bundler-B6OWRSK7.js","assets/index-BIB26Vf3.css"])))=>i.map(i=>d[i]);
+import{Y as e,o as t,t as n}from"./index-B2fX77d7.js";var r=e({App:()=>i}),i=t(`App`,{web:()=>n(()=>import(`./web-DOtc7_Sc.js`).then(e=>new e.AppWeb),__vite__mapDeps([0,1,2,3]))});export{r as n,i as t};

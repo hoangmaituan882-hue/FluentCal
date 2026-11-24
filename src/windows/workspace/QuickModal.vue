@@ -13,7 +13,15 @@ import {
   STATUS_META,
   taskShortCode,
 } from '@/lib/taskMeta';
-import { addTask } from '@/lib/tasks';
+import {
+  formatHabitDayProgress,
+  isHabitTask,
+  resolveHabit,
+  stepCountHabit,
+  toggleCheckHabit,
+  toggleQuitRelapse,
+} from '@/lib/habits';
+import { addTask, saveTask } from '@/lib/tasks';
 import { uid } from '@/lib/uid';
 import { isDark } from '@/composables/theme';
 import { now } from '@/composables/now';
@@ -21,6 +29,7 @@ import { useViewport } from '@/composables/useViewport';
 import { doc, groupList, taskList } from '@/stores/doc';
 import { notify } from '../desk/state';
 import GroupSquircle from './GroupSquircle.vue';
+import HabitEmblem from './HabitEmblem.vue';
 import NumberPop from './NumberPop.vue';
 import PriorityGlyph from './PriorityGlyph.vue';
 import StatusGlyph from './StatusGlyph.vue';
@@ -297,13 +306,15 @@ function toggleCapStar() {
 
 interface SearchResult {
   id: string;
-  kind: 'nav' | 'group' | 'task' | 'event' | 'create';
+  kind: 'nav' | 'group' | 'task' | 'event' | 'habit' | 'create';
   category: string;
   title: string;
   sub?: string;
   icon: string;
   groupIcon?: string;
   groupColorKey?: string;
+  habitIconKey?: string;
+  habitColor?: string;
   taskStatus?: TaskStatus;
   taskPriority?: TaskPriority;
   taskCode?: string;
@@ -333,6 +344,7 @@ const searchResults = computed<SearchResult[]>(() => {
     { id: 'nav:calendar', kind: 'nav', category: '视图', title: '日历视图', sub: '多日与月历', icon: 'calendar', page: 'calendar' },
     { id: 'nav:inbox', kind: 'nav', category: '视图', title: '收集箱', sub: '不定日与待排期', icon: 'inbox', page: 'inbox' },
     { id: 'nav:tasks', kind: 'nav', category: '视图', title: '待办清单', sub: '列表与看板', icon: 'checklist', page: 'tasks' },
+    { id: 'nav:habits', kind: 'nav', category: '视图', title: '每日习惯', sub: '热力矩阵与打卡', icon: 'flame', page: 'habits' },
     { id: 'nav:subscriptions', kind: 'nav', category: '视图', title: '订阅日历', sub: '会员与扣费账单', icon: 'subscription', page: 'subscriptions' },
     { id: 'nav:countdowns', kind: 'nav', category: '视图', title: '倒数日', sub: '节假日与纪念日', icon: 'timer', page: 'countdowns' },
     { id: 'nav:gantt', kind: 'nav', category: '视图', title: '项目甘特', sub: '跨天排期', icon: 'gantt', page: 'gantt' },
@@ -352,7 +364,7 @@ const searchResults = computed<SearchResult[]>(() => {
   }));
 
   const sortedTasks = taskList.value
-    .filter((t) => !t.countdownOnly && !t.subscriptionOnly)
+    .filter((t) => !t.countdownOnly && !t.subscriptionOnly && !t.habitOnly)
     .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
 
   const taskEntries: SearchResult[] = [];
@@ -382,8 +394,37 @@ const searchResults = computed<SearchResult[]>(() => {
     else taskEntries.push(entry);
   }
 
+  const habitEntries: SearchResult[] = taskList.value
+    .filter(isHabitTask)
+    .filter((t) => !t.habit.archived)
+    .sort((a, b) => a.order - b.order || a.createdAt - b.createdAt)
+    .map((t) => {
+      const h = resolveHabit(t, now.value, now.value, doc.settings.calendar.weekStart);
+      const hint =
+        h.meta.kind === 'count'
+          ? `${formatHabitDayProgress(h.meta, h.day)} · 回车 +${h.meta.step ?? 1}`
+          : h.meta.kind === 'quit'
+            ? h.day.state === 'relapse'
+              ? '今日破戒 · 回车恢复稳住'
+              : `已克制 ${h.currentStreak} 天 · 强度 ${h.strength}%`
+            : h.day.state === 'done'
+              ? `已完成 · 强度 ${h.strength}%`
+              : `待打卡 · 回车一键完成`;
+      return {
+        id: `hab:${t.id}`,
+        kind: 'habit' as const,
+        category: '每日习惯 · 回车快捷打卡',
+        title: t.title,
+        sub: hint,
+        icon: 'flame',
+        habitIconKey: h.meta.iconKey,
+        habitColor: h.meta.color,
+        taskId: t.id,
+      };
+    });
+
   if (!q) {
-    return [...taskEntries.slice(0, 4), ...eventEntries.slice(0, 3), ...groupEntries.slice(0, 3), ...navEntries.slice(0, 4)];
+    return [...taskEntries.slice(0, 4), ...eventEntries.slice(0, 3), ...habitEntries.slice(0, 3), ...groupEntries.slice(0, 3), ...navEntries.slice(0, 4)];
   }
 
   const match = (r: SearchResult) =>
@@ -391,6 +432,7 @@ const searchResults = computed<SearchResult[]>(() => {
     r.sub?.toLowerCase().includes(q) ||
     r.taskCode?.toLowerCase().includes(q);
 
+  const matchedHabits = (q === '习惯' || q === '打卡' ? habitEntries : habitEntries.filter(match)).slice(0, 4);
   const matchedTasks = taskEntries.filter(match).slice(0, 5);
   const matchedEvents = eventEntries.filter(match).slice(0, 4);
   const matchedGroups = groupEntries.filter(match).slice(0, 3);
@@ -406,7 +448,7 @@ const searchResults = computed<SearchResult[]>(() => {
     createText: rawQ,
   };
 
-  return [...matchedTasks, ...matchedEvents, ...matchedGroups, ...matchedNav, createRow];
+  return [...matchedHabits, ...matchedTasks, ...matchedEvents, ...matchedGroups, ...matchedNav, createRow];
 });
 
 watch(searchResults, () => {
@@ -421,6 +463,22 @@ async function pickResult(r: SearchResult) {
       end: now.value,
       groupId: props.defaultGroupId && props.defaultGroupId !== '__ungrouped__' ? props.defaultGroupId : undefined,
     });
+    emit('close');
+    return;
+  }
+  if (r.kind === 'habit' && r.taskId) {
+    const t = taskList.value.find((x) => x.id === r.taskId);
+    if (t && isHabitTask(t)) {
+      const nextMeta =
+        t.habit.kind === 'check'
+          ? toggleCheckHabit(t.habit, now.value)
+          : t.habit.kind === 'count'
+            ? stepCountHabit(t.habit, now.value)
+            : toggleQuitRelapse(t.habit, now.value);
+      await saveTask({ ...t, habitOnly: true, habit: nextMeta });
+      const after = resolveHabit({ ...t, habit: nextMeta }, now.value, now.value, doc.settings.calendar.weekStart);
+      notify(`「${t.title}」${formatHabitDayProgress(nextMeta, after.day)}`, true);
+    }
     emit('close');
     return;
   }
@@ -548,6 +606,33 @@ async function saveCapture(keepOpenOverride?: boolean) {
     emit('close');
   }
 }
+// 1:1 Swipe-Down Grabber/Header to Dismiss on Phone Bottom Sheet
+const qmDragY = ref(0);
+const qmDragging = ref(false);
+let qmStartY = 0;
+
+function onQmGrabTouchStart(e: TouchEvent) {
+  if (!isPhone.value || e.touches.length !== 1) return;
+  qmStartY = e.touches[0].clientY;
+  qmDragging.value = true;
+}
+
+function onQmGrabTouchMove(e: TouchEvent) {
+  if (!qmDragging.value || e.touches.length !== 1) return;
+  const dy = e.touches[0].clientY - qmStartY;
+  if (dy > 0) {
+    e.preventDefault();
+    qmDragY.value = dy;
+  }
+}
+
+function onQmGrabTouchEnd() {
+  if (!qmDragging.value) return;
+  const close = qmDragY.value > 72;
+  qmDragging.value = false;
+  qmDragY.value = 0;
+  if (close) emit('close');
+}
 </script>
 
 <template>
@@ -560,9 +645,29 @@ async function saveCapture(keepOpenOverride?: boolean) {
       aria-modal="true"
       @mousedown.self="emit('close')"
     >
-      <div class="ws-modal-card" :class="{ phone: isPhone }">
-        <div v-if="isPhone" class="qm-grab" aria-hidden="true" />
-        <div class="qm-head">
+      <div
+        class="ws-modal-card"
+        :class="{ phone: isPhone, dragging: qmDragging }"
+        :style="isPhone && qmDragY > 0 ? { transform: `translate3d(0, ${qmDragY.toFixed(1)}px, 0)` } : undefined"
+      >
+        <div
+          v-if="isPhone"
+          class="qm-grab-zone"
+          aria-hidden="true"
+          @touchstart="onQmGrabTouchStart"
+          @touchmove="onQmGrabTouchMove"
+          @touchend="onQmGrabTouchEnd"
+          @touchcancel="onQmGrabTouchEnd"
+        >
+          <div class="qm-grab" />
+        </div>
+        <div
+          class="qm-head"
+          @touchstart="onQmGrabTouchStart"
+          @touchmove="onQmGrabTouchMove"
+          @touchend="onQmGrabTouchEnd"
+          @touchcancel="onQmGrabTouchEnd"
+        >
           <div ref="switchRef" class="qm-switch" role="tablist">
             <span
               v-if="swVisible"
@@ -622,6 +727,7 @@ async function saveCapture(keepOpenOverride?: boolean) {
                 @click="pickResult(r)"
               >
                 <GroupSquircle v-if="r.kind === 'group'" :name="r.title" :color-key="r.groupColorKey" :icon="r.groupIcon" :size="16" />
+                <HabitEmblem v-else-if="r.kind === 'habit'" :icon-key="r.habitIconKey" :color="r.habitColor" :size="18" :radius="5" />
                 <span v-else-if="r.kind === 'event'" class="qm-event-dot" aria-hidden="true" />
                 <StatusGlyph v-else-if="r.kind === 'task' && r.taskStatus" :status="r.taskStatus" :size="14" />
                 <FIcon v-else :name="r.icon" :size="14" class="qm-r-ico" />
@@ -679,10 +785,22 @@ async function saveCapture(keepOpenOverride?: boolean) {
 
           <!-- Quick Starter Templates Strip -->
           <div class="qm-tpl-strip">
-            <button type="button" class="qm-tpl-chip" @click="applyStarterTemplate('focus')">⚡ 专注 1h</button>
-            <button type="button" class="qm-tpl-chip" @click="applyStarterTemplate('meeting')">📅 会议日程</button>
-            <button type="button" class="qm-tpl-chip" @click="applyStarterTemplate('habit')">🔁 每日打卡</button>
-            <button type="button" class="qm-tpl-chip" @click="applyStarterTemplate('urgent')">📌 高优置顶</button>
+            <button type="button" class="qm-tpl-chip" @click="applyStarterTemplate('focus')">
+              <FIcon name="timer" :size="11" />
+              <span>专注 1h</span>
+            </button>
+            <button type="button" class="qm-tpl-chip" @click="applyStarterTemplate('meeting')">
+              <FIcon name="calendar" :size="11" />
+              <span>会议日程</span>
+            </button>
+            <button type="button" class="qm-tpl-chip" @click="applyStarterTemplate('habit')">
+              <FIcon name="repeat" :size="11" />
+              <span>每日打卡</span>
+            </button>
+            <button type="button" class="qm-tpl-chip" @click="applyStarterTemplate('urgent')">
+              <FIcon name="star" :size="11" />
+              <span>高优置顶</span>
+            </button>
           </div>
 
           <!-- Primary Input: Batch Textarea OR Smart NLP Title Input -->
@@ -719,10 +837,12 @@ async function saveCapture(keepOpenOverride?: boolean) {
                   class="qm-cap-title"
                   :placeholder="
                     capKind === 'event'
-                      ? '输入日程标题，例如：产品评审会…'
+                      ? '日程标题，例如：产品评审会…'
                       : capKind === 'habit'
-                        ? '输入习惯名称，例如：晨跑 30 分钟…'
-                        : '输入待办，支持「明天下午3点 写方案 #分组 !高」…'
+                        ? '习惯名称，例如：晨跑 30 分钟…'
+                        : isPhone
+                          ? '例：明天 15:00 写方案 #分组 !高'
+                          : '输入待办，支持「明天下午3点 写方案 #分组 !高」…'
                   "
                   @input="capTitleError = false"
                 />
@@ -1300,9 +1420,22 @@ async function saveCapture(keepOpenOverride?: boolean) {
   width: 100%;
   max-width: 100%;
   max-height: 88dvh;
-  border-radius: 22px 22px 0 0;
+  border-radius: 24px 24px 0 0;
   border-bottom: 0;
   padding-bottom: env(safe-area-inset-bottom);
+  transition: transform 220ms var(--ws-ease-out);
+}
+
+.ws-modal-card.phone.dragging {
+  transition: none;
+}
+
+.qm-grab-zone {
+  padding: 8px 0 2px;
+  display: flex;
+  justify-content: center;
+  flex: none;
+  touch-action: none;
 }
 
 .qm-grab {
@@ -1310,7 +1443,6 @@ async function saveCapture(keepOpenOverride?: boolean) {
   height: 4px;
   border-radius: 999px;
   background: var(--ws-hairline-strong);
-  margin: 8px auto 0;
   flex: none;
 }
 
@@ -1427,15 +1559,18 @@ async function saveCapture(keepOpenOverride?: boolean) {
 
 .qm-tpl-chip {
   flex: none;
-  height: 24px;
-  padding: 0 9px;
+  height: 26px;
+  padding: 0 10px;
   border-radius: 999px;
   border: 1px solid var(--ws-hairline);
   background: transparent;
   color: var(--ws-ink-secondary);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font: inherit;
-  font-size: 11px;
-  font-weight: 560;
+  font-size: 11.5px;
+  font-weight: 580;
   cursor: pointer;
   transition: background-color 140ms ease, color 140ms ease, border-color 140ms ease, transform 120ms ease;
 }

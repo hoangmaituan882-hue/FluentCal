@@ -570,21 +570,66 @@ onBeforeUnmount(() => {
   if (isNew.value) clearPendingDraft();
 });
 
+// 1:1 Swipe-Down Grabber to Dismiss on Phone Bottom Sheet
+const insDragY = ref(0);
+const insDragging = ref(false);
+let insStartY = 0;
+
+function onInsGrabTouchStart(e: TouchEvent) {
+  if (!isPhone.value || e.touches.length !== 1) return;
+  insStartY = e.touches[0].clientY;
+  insDragging.value = true;
+}
+
+function onInsGrabTouchMove(e: TouchEvent) {
+  if (!insDragging.value || e.touches.length !== 1) return;
+  const dy = e.touches[0].clientY - insStartY;
+  if (dy > 0) {
+    e.preventDefault();
+    insDragY.value = dy;
+  }
+}
+
+function onInsGrabTouchEnd() {
+  if (!insDragging.value) return;
+  const shouldClose = insDragY.value > 78;
+  insDragging.value = false;
+  insDragY.value = 0;
+  if (shouldClose) void tryClose();
+}
+
 defineExpose({ requestClose: tryClose });
 </script>
 
 <template>
   <div class="ws-ins-host" :class="{ phone: isPhone, tablet: isTablet, compact: isCompactNav }">
     <div v-if="isCompactNav" class="ws-ins-scrim" @click="tryClose" />
-    <aside class="ws-inspector" role="dialog" :aria-modal="isCompactNav ? 'true' : undefined" aria-label="任务详情抽屉">
-      <div v-if="isPhone" class="ins-grab" aria-hidden="true" />
+    <aside
+      class="ws-inspector"
+      :class="{ dragging: insDragging }"
+      :style="isPhone && insDragY > 0 ? { transform: `translate3d(0, ${insDragY.toFixed(1)}px, 0)` } : undefined"
+      role="dialog"
+      :aria-modal="isCompactNav ? 'true' : undefined"
+      aria-label="任务详情抽屉"
+    >
+      <div
+        v-if="isPhone"
+        class="ins-grab-zone"
+        aria-hidden="true"
+        @touchstart="onInsGrabTouchStart"
+        @touchmove="onInsGrabTouchMove"
+        @touchend="onInsGrabTouchEnd"
+        @touchcancel="onInsGrabTouchEnd"
+      >
+        <div class="ins-grab" />
+      </div>
       <div v-if="missing" class="ins-missing">
         <p>该任务已被删除或不再存在。</p>
         <button type="button" class="ws-cta-btn" @click="emit('close')">关闭</button>
       </div>
 
       <template v-else-if="draft">
-      <div v-if="!draft.milestone && !draft.repeat" class="ins-progress-rail" aria-hidden="true">
+      <div v-if="!isPhone && !draft.milestone && !draft.repeat" class="ins-progress-rail" aria-hidden="true">
         <div
           class="ins-progress-fill"
           :style="{ width: `${draft.progress}%`, background: accentProgressColor }"
@@ -592,7 +637,13 @@ defineExpose({ requestClose: tryClose });
       </div>
 
       <!-- Top Bar: Group + Status Dropdown + Close -->
-      <header class="ins-header">
+      <header
+        class="ins-header"
+        @touchstart="onInsGrabTouchStart"
+        @touchmove="onInsGrabTouchMove"
+        @touchend="onInsGrabTouchEnd"
+        @touchcancel="onInsGrabTouchEnd"
+      >
         <button type="button" class="ins-group-pill" @click="openGroupMenu">
           <span class="ig-ico" :style="{ color: groupHex }">
             <FGroupIcon
@@ -976,8 +1027,21 @@ defineExpose({ requestClose: tryClose });
   max-width: 100%;
   height: 92dvh;
   max-height: 92dvh;
-  border-radius: 22px 22px 0 0;
+  border-radius: 24px 24px 0 0;
   border-bottom: 0;
+  transition: transform 220ms var(--ws-ease-out);
+}
+
+.ws-ins-host.phone .ws-inspector.dragging {
+  transition: none;
+}
+
+.ins-grab-zone {
+  padding: 8px 0 2px;
+  display: flex;
+  justify-content: center;
+  flex: none;
+  touch-action: none;
 }
 
 .ins-grab {
@@ -985,7 +1049,6 @@ defineExpose({ requestClose: tryClose });
   height: 4px;
   border-radius: 999px;
   background: var(--ws-hairline-strong);
-  margin: 8px auto 0;
   flex: none;
 }
 

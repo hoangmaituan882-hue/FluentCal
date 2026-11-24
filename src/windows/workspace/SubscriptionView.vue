@@ -6,19 +6,22 @@ import type {
   SubscriptionCategory,
   SubscriptionCycle,
   SubscriptionMeta,
+  SubscriptionStatus,
+  SubscriptionSubAccount,
   Task,
 } from '@/types';
 import { addMonths, daysInMonth, parts, startOfMonth, weekday, WEEKDAY_SHORT, ymd } from '@/lib/date';
 import {
   buildCategoryBreakdown,
   CATEGORY_META,
+  CURRENCY_META,
   CYCLE_META,
   effectiveSplit,
   formatCurrencyAmount,
   formatDueCountdown,
   formatShortDueDate,
+  isSubscriptionActiveStatus,
   isSubscriptionTask,
-  monthNameEnglish,
   resolveSubscription,
   sampleSubscriptionPayloads,
   STATUS_LABELS,
@@ -30,7 +33,9 @@ import { addTask, deleteTask, saveTask } from '@/lib/tasks';
 import { now } from '@/composables/now';
 import { useViewport } from '@/composables/useViewport';
 import { doc, taskList } from '@/stores/doc';
+import FushiTonalCard from './FushiTonalCard.vue';
 import SubscriptionEditorModal from './SubscriptionEditorModal.vue';
+import SubscriptionEmblem from './SubscriptionEmblem.vue';
 import { useSlidingIndicator } from './useSlidingIndicator';
 
 type SubViewMode = 'insights' | 'master';
@@ -52,6 +57,10 @@ const searchText = ref('');
 const masterCat = ref<SubscriptionCategory | 'all'>('all');
 const masterPay = ref<'all' | 'auto' | 'manual'>('all');
 const masterCycle = ref<SubscriptionCycle | 'all'>('all');
+const masterFiltersOpen = ref(false);
+const hasSecondaryMasterFilter = computed(
+  () => masterPay.value !== 'all' || masterCycle.value !== 'all',
+);
 
 // Editor modal state
 const editorOpen = ref(false);
@@ -74,7 +83,7 @@ const allSubscriptions = computed<ResolvedSubscription[]>(() =>
 );
 
 const activeSubscriptions = computed(() =>
-  allSubscriptions.value.filter((s) => s.meta.status === 'active' || s.meta.status === 'trial'),
+  allSubscriptions.value.filter((s) => isSubscriptionActiveStatus(s.meta.status)),
 );
 
 watch(
@@ -112,7 +121,7 @@ const monthSummary = computed(() =>
 );
 
 const heroWatermarkText = computed(() =>
-  period.value === 'month' ? monthNameEnglish(cursorMonth.value) : `${cursorYear.value} YEAR`,
+  period.value === 'month' ? '月均订阅实付' : '全年订阅实付',
 );
 
 const heroDisplayAmount = computed(() => {
@@ -143,10 +152,6 @@ function cardDeckPosition(idx: number): number {
 function flipDeck() {
   if (deckCards.value.length <= 1) return;
   deckOffset.value = (deckOffset.value + 1) % deckCards.value.length;
-}
-
-function cardGradientBg(hex: string): string {
-  return `linear-gradient(122deg, ${hex} 0%, color-mix(in srgb, ${hex} 72%, #ffffff) 100%)`;
 }
 
 // Pure-Icon Calendar Grid for (cursorYear, cursorMonth)
@@ -296,10 +301,91 @@ function openDetailFor(sub: ResolvedSubscription) {
 }
 
 async function togglePauseSub(sub: ResolvedSubscription) {
-  const nextStatus = sub.meta.status === 'paused' ? 'active' : 'paused';
+  const nextStatus: SubscriptionStatus = sub.meta.status === 'paused' ? 'active' : 'paused';
   await saveTask({
     ...sub.task,
-    subscription: { ...sub.meta, status: nextStatus },
+    subscription: { ...sub.meta, status: nextStatus, autoRenew: nextStatus === 'active' ? sub.meta.autoRenew : false },
+  });
+}
+
+async function toggleEndingSub(sub: ResolvedSubscription) {
+  const isEnding = sub.meta.status === 'ending';
+  const nextStatus: SubscriptionStatus = isEnding ? 'active' : 'ending';
+  await saveTask({
+    ...sub.task,
+    subscription: { ...sub.meta, status: nextStatus, autoRenew: isEnding },
+  });
+}
+
+// Inline multi-account / sub-subscription adder inside Detail Stage
+const subAccAdderOpen = ref(false);
+const draftSubLabel = ref('');
+const draftSubPlan = ref('');
+const draftSubPrice = ref('');
+
+watch(selectedId, () => {
+  subAccAdderOpen.value = false;
+  draftSubLabel.value = '';
+  draftSubPlan.value = '';
+  draftSubPrice.value = '';
+});
+
+function openSubAccAdder(sub: ResolvedSubscription) {
+  subAccAdderOpen.value = !subAccAdderOpen.value;
+  if (subAccAdderOpen.value) {
+    draftSubLabel.value = '';
+    draftSubPlan.value = sub.meta.plan ?? '';
+    draftSubPrice.value = String(sub.meta.price);
+  }
+}
+
+async function addDetailSubAccount(sub: ResolvedSubscription) {
+  const label = draftSubLabel.value.trim() || `副号 ${(sub.meta.accounts?.length ?? 0) + 1}`;
+  const pr = Number.parseFloat(draftSubPrice.value);
+  const price = Number.isFinite(pr) && pr >= 0 ? pr : sub.meta.price;
+  const nextAcc: SubscriptionSubAccount = {
+    id: `acc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    label,
+    plan: draftSubPlan.value.trim() || sub.meta.plan || undefined,
+    price,
+    currency: sub.meta.currency,
+    cycle: sub.meta.cycle,
+    status: 'active',
+    autoRenew: true,
+  };
+  await saveTask({
+    ...sub.task,
+    subscription: {
+      ...sub.meta,
+      accounts: [...(sub.meta.accounts ?? []), nextAcc],
+    },
+  });
+  draftSubLabel.value = '';
+  draftSubPlan.value = '';
+  subAccAdderOpen.value = false;
+}
+
+async function cycleDetailSubAccountStatus(sub: ResolvedSubscription, accId: string) {
+  const order: SubscriptionStatus[] = ['active', 'ending', 'paused'];
+  const nextAccounts = (sub.meta.accounts ?? []).map((a) => {
+    if (a.id !== accId) return a;
+    const nextSt = order[(order.indexOf(a.status ?? 'active') + 1) % order.length];
+    return { ...a, status: nextSt, autoRenew: nextSt === 'active' };
+  });
+  await saveTask({
+    ...sub.task,
+    subscription: { ...sub.meta, accounts: nextAccounts },
+  });
+}
+
+async function removeDetailSubAccount(sub: ResolvedSubscription, accId: string) {
+  const nextAccounts = (sub.meta.accounts ?? []).filter((a) => a.id !== accId);
+  await saveTask({
+    ...sub.task,
+    subscription: {
+      ...sub.meta,
+      accounts: nextAccounts.length ? nextAccounts : undefined,
+    },
   });
 }
 
@@ -327,11 +413,11 @@ function miniDotsFor(sub: ResolvedSubscription): boolean[] {
 
 <template>
   <div class="sub-page" :class="{ phone: isPhone }">
-    <!-- Editorial Top Header Strip -->
-    <header class="sv-head">
-      <div class="sv-head-left">
-        <div class="sv-eyebrow">订阅日历 · {{ cursorYear }}年{{ cursorMonth }}月</div>
+    <!-- Enlarged Bold Black Display Header (zero red eyebrow!) -->
+    <header class="sv-head" :class="{ phone: isPhone }">
+      <div v-if="!isPhone" class="sv-head-left">
         <h1 class="sv-title">{{ subView === 'insights' ? '数据洞察' : '清单与详情' }}</h1>
+        <span class="sv-date-chip tabular">{{ cursorYear }}年{{ cursorMonth }}月</span>
       </div>
 
       <div class="sv-head-right">
@@ -386,20 +472,28 @@ function miniDotsFor(sub: ResolvedSubscription): boolean[] {
           </button>
         </div>
 
-        <button type="button" class="sv-add-btn" @click="openCreateModal()">
+        <button
+          type="button"
+          class="sv-add-btn"
+          :class="{ icon: isPhone }"
+          title="添加订阅"
+          aria-label="添加订阅"
+          @click="openCreateModal()"
+        >
           <FIcon name="add" :size="14" />
-          <span>添加订阅</span>
+          <span v-if="!isPhone">添加订阅</span>
         </button>
       </div>
     </header>
 
-    <!-- First-Run Inviting Empty State -->
+    <!-- First-Run Inviting Empty State (Unified Fushi Tonal Card) -->
     <div v-if="!allSubscriptions.length" class="sv-empty-stage">
-      <div class="wm-card sv-empty-card tone-hero">
-        <span class="wm-text sv-empty-wm" aria-hidden="true">SUBSCRIPTIONS</span>
-        <div class="tilted-emblem sv-empty-emblem">
-          <FIcon name="subscription" :size="28" />
-        </div>
+      <FushiTonalCard variant="hero" class="sv-empty-card" tint="#4E659E" watermark="订阅日历">
+        <template #emblem>
+          <div class="sv-empty-emblem">
+            <FIcon name="subscription" :size="28" />
+          </div>
+        </template>
         <div class="sv-empty-copy">
           <h2>把所有会员、云服务与自动续费收进同一张日历</h2>
           <p>
@@ -416,100 +510,104 @@ function miniDotsFor(sub: ResolvedSubscription): boolean[] {
             </button>
           </div>
         </div>
-      </div>
+      </FushiTonalCard>
     </div>
 
     <!-- ==================== VIEW 1: 数据洞察 ==================== -->
     <div v-else-if="subView === 'insights'" class="sv-scroll">
       <div class="sv-insights-grid">
-        <!-- LEFT COLUMN: Watermark Editorial Spend Hero + Watermark Proportional Treemap -->
+        <!-- LEFT COLUMN: Unified Fushi Tonal Hero + Unified Fushi Category Treemap -->
         <div class="sv-col-left">
-          <!-- HERO SPEND CARD (Monochrome Pastel + Oversized Watermark + -6deg Emblem + Thick Progress Track) -->
-          <section class="wm-card sv-hero-card tone-hero">
-            <span class="wm-text sv-hero-wm" aria-hidden="true">{{ heroWatermarkText }}</span>
+          <!-- HERO SPEND CARD (Unified Fushi Tonal Template) -->
+          <FushiTonalCard
+            as="section"
+            variant="hero"
+            class="sv-hero-card"
+            tint="#4E659E"
+            :watermark="heroWatermarkText"
+            :progress="monthSummary.billedProgressPct"
+          >
+            <template #emblem>
+              <div class="sv-hero-emblem" aria-hidden="true">
+                <span class="she-mon">{{ cursorMonth }}月</span>
+                <strong class="she-day">{{ parts(now)[2] }}</strong>
+              </div>
+            </template>
 
-            <div class="tilted-emblem sv-hero-emblem" aria-hidden="true">
-              <span class="she-mon">{{ monthNameEnglish(cursorMonth).slice(0, 3) }}</span>
-              <strong class="she-day">{{ parts(now)[2] }}</strong>
-            </div>
-
-            <div class="sv-hero-body">
-              <div class="sv-hero-top">
-                <div class="sv-hero-meta-col">
-                  <div class="sv-hero-label">{{ period === 'month' ? '月均订阅实付' : '全年订阅实付' }}</div>
-                  <div class="sv-hero-sub">
-                    <span>折合 CNY · {{ activeSubscriptions.length }} 项生效</span>
-                    <span v-if="totalSplitSavedMonthlyCNY >= 1" class="sv-save-pill">
-                      拼车已省 ¥{{ Math.round(totalSplitSavedMonthlyCNY) }}/月
-                    </span>
-                  </div>
-                </div>
-                <div class="sv-hero-amount tabular">
-                  ¥{{ heroDisplayAmount }}<small v-if="heroSubDisplayDecimals">{{ heroSubDisplayDecimals }}</small>
+            <div class="sv-hero-top">
+              <div class="sv-hero-meta-col">
+                <div class="sv-hero-label">{{ period === 'month' ? '月均订阅实付' : '全年订阅实付' }}</div>
+                <div class="sv-hero-sub">
+                  <span>折合 CNY · {{ activeSubscriptions.length }} 项生效</span>
+                  <span v-if="totalSplitSavedMonthlyCNY >= 1" class="sv-save-pill">
+                    优惠/拼车已省 ¥{{ Math.round(totalSplitSavedMonthlyCNY) }}/月
+                  </span>
                 </div>
               </div>
-
-              <!-- Thick Monochrome Pill Progress Track -->
-              <div class="sv-hero-progress">
-                <div class="sv-hp-labels tabular">
-                  <span>{{ cursorMonth }}月已扣进度 {{ monthSummary.billedProgressPct }}%</span>
-                  <span>本月待扣 ¥{{ Math.round(monthSummary.remainingMonthCNY) }}</span>
-                </div>
-                <div class="sv-thick-track">
-                  <div class="sv-thick-fill" :style="{ width: `${monthSummary.billedProgressPct}%` }" />
-                </div>
+              <div class="sv-hero-amount tabular">
+                ¥{{ heroDisplayAmount }}<small v-if="heroSubDisplayDecimals">{{ heroSubDisplayDecimals }}</small>
               </div>
             </div>
-          </section>
+
+            <template #progressMeta>
+              <span class="tabular">{{ cursorMonth }}月已扣进度 {{ monthSummary.billedProgressPct }}%</span>
+              <span class="tabular">本月待扣 ¥{{ Math.round(monthSummary.remainingMonthCNY) }}</span>
+            </template>
+          </FushiTonalCard>
 
           <!-- Treemap Header -->
           <div class="sv-sec-row">
-            <span class="sv-sec-hint">分类支出树图 · 点击卡片聚光右侧月历</span>
+            <span class="sv-sec-hint">{{ isPhone ? '分类支出' : '分类支出树图' }}</span>
             <button
               v-if="focusCategory"
               type="button"
               class="sv-reset-link"
               @click="focusCategory = null"
             >
-              显示全部分类
+              全部
             </button>
           </div>
 
-          <!-- PROPORTIONAL WATERMARK CATEGORY TREEMAP -->
+          <!-- PROPORTIONAL FUSHI TONAL CATEGORY TREEMAP -->
           <div class="sv-treemap" :class="{ single: secondarySlices.length === 0 }">
             <!-- Primary Dominant Category Tile -->
-            <button
+            <FushiTonalCard
               v-if="primarySlice"
-              type="button"
-              class="wm-card tm-tile tm-primary"
-              :class="[primarySlice.toneClass, { active: focusCategory === primarySlice.category }]"
+              as="button"
+              variant="tile"
+              interactive
+              :active="focusCategory === primarySlice.category"
+              :tint="primarySlice.color"
+              :watermark="primarySlice.watermark"
+              :progress="primarySlice.percent"
+              class="tm-tile tm-primary"
               @click="toggleFocusCat(primarySlice.category)"
             >
-              <span class="wm-text tm-wm-lg" aria-hidden="true">{{ primarySlice.watermark }}</span>
               <div class="tm-top">
                 <span class="tm-name">{{ primarySlice.label }}</span>
                 <span class="tm-sub tabular">{{ primarySlice.count }} 项 · {{ primarySlice.percent }}%</span>
               </div>
               <div class="tm-bottom">
                 <div class="tm-price tabular">¥{{ Math.round(primarySlice.amountCNY).toLocaleString('zh-CN') }}</div>
-                <div class="tm-bar-track">
-                  <div class="tm-bar-fill" :style="{ width: `${Math.max(8, primarySlice.percent)}%` }" />
-                </div>
               </div>
-            </button>
+            </FushiTonalCard>
 
             <!-- Secondary Stacked Proportional Category Tiles -->
             <div v-if="secondarySlices.length" class="tm-stack">
-              <button
+              <FushiTonalCard
                 v-for="sl in secondarySlices"
                 :key="sl.category"
-                type="button"
-                class="wm-card tm-tile tm-sub-tile"
-                :class="[sl.toneClass, { active: focusCategory === sl.category }]"
-                :style="{ flex: `${Math.max(0.75, Math.min(2.2, (sl.percent / 20)))}` }"
+                as="button"
+                variant="tile"
+                interactive
+                :active="focusCategory === sl.category"
+                :tint="sl.color"
+                :watermark="sl.watermark"
+                :progress="sl.percent"
+                class="tm-tile tm-sub-tile"
+                :style="{ flex: `${Math.max(0.85, Math.min(2.2, sl.percent / 18))}` }"
                 @click="toggleFocusCat(sl.category)"
               >
-                <span class="wm-text tm-wm-sm" aria-hidden="true">{{ sl.watermark }}</span>
                 <div class="tm-top">
                   <span class="tm-name">{{ sl.label }}</span>
                   <span class="tm-sub tabular">{{ sl.count }} 项 · {{ sl.percent }}%</span>
@@ -518,19 +616,18 @@ function miniDotsFor(sub: ResolvedSubscription): boolean[] {
                   <span class="tm-price-sm tabular">¥{{ Math.round(sl.amountCNY).toLocaleString('zh-CN') }}</span>
                   <span class="tm-pct-tag tabular">{{ sl.percent }}%</span>
                 </div>
-              </button>
+              </FushiTonalCard>
             </div>
           </div>
         </div>
 
-        <!-- RIGHT COLUMN: RESTORED Staggered Gradient Membership Deck + Pure-Icon Visual Billing Calendar -->
+        <!-- RIGHT COLUMN: Fushi Tonal Staggered Membership Deck + Pure-Icon Visual Billing Calendar -->
         <div class="sv-col-right">
-          <!-- RESTORED STAGGERED GRADIENT MEMBERSHIP DECK (Image 1 Signature + Watermark Typography!) -->
           <section class="sv-deck-panel">
             <div class="sv-deck-head">
               <div class="sv-deck-title-group">
                 <span class="sv-deck-title">即将扣款</span>
-                <span class="sv-deck-badge">{{ deckCards.length }} 张叠卡 · 点击翻牌</span>
+                <span class="sv-deck-badge">{{ isPhone ? `${deckCards.length} 项` : `${deckCards.length} 张叠卡` }}</span>
               </div>
               <div class="sv-deck-actions">
                 <button
@@ -553,27 +650,38 @@ function miniDotsFor(sub: ResolvedSubscription): boolean[] {
             </div>
 
             <div class="stagger-deck" @click="flipDeck">
-              <article
+              <FushiTonalCard
                 v-for="(sub, idx) in deckCards"
                 :key="sub.task.id"
+                as="article"
+                variant="deck"
+                :tint="sub.brandColor"
+                :watermark="sub.watermark"
+                :progress="sub.window.progressPct"
                 class="stagger-card"
                 :data-pos="cardDeckPosition(idx)"
-                :style="{ background: cardGradientBg(sub.brandColor) }"
                 @dblclick.stop="openDetailFor(sub)"
               >
-                <span class="stagger-wm" aria-hidden="true">{{ sub.watermark }}</span>
+                <template #emblem>
+                  <SubscriptionEmblem
+                    :brand-key="sub.brandKey"
+                    :icon-data="sub.iconData"
+                    :title="sub.task.title"
+                    :emblem="sub.emblem"
+                    :brand-color="sub.brandColor"
+                    :size="46"
+                    :radius="14"
+                  />
+                </template>
 
                 <div class="sc-top">
-                  <div class="sc-brand">
-                    <span class="sc-emblem">{{ sub.emblem }}</span>
-                    <div class="sc-brand-copy">
-                      <div class="sc-name">{{ sub.task.title }}</div>
-                      <div class="sc-cycle">
-                        {{ CYCLE_META[sub.meta.cycle].label }}
-                        <template v-if="effectiveSplit(sub.meta) > 1"> · {{ effectiveSplit(sub.meta) }}人拼车</template>
-                        <template v-else-if="sub.meta.status === 'trial'"> · 试用护盾</template>
-                        <template v-else> · {{ sub.meta.autoRenew ? '自动续费' : '主动付款' }}</template>
-                      </div>
+                  <div class="sc-brand-copy">
+                    <div class="sc-name">{{ sub.task.title }}</div>
+                    <div class="sc-cycle">
+                      {{ CYCLE_META[sub.meta.cycle].label }}
+                      <template v-if="effectiveSplit(sub.meta) > 1"> · {{ effectiveSplit(sub.meta) }}人拼车</template>
+                      <template v-else-if="sub.meta.status === 'trial'"> · 试用护盾</template>
+                      <template v-else> · {{ sub.meta.autoRenew ? '自动续费' : '主动付款' }}</template>
                     </div>
                   </div>
                   <span class="sc-due-pill">
@@ -594,7 +702,7 @@ function miniDotsFor(sub: ResolvedSubscription): boolean[] {
                     <strong class="sc-v tabular">{{ formatShortDueDate(sub.window.nextDate) }}</strong>
                   </div>
                 </div>
-              </article>
+              </FushiTonalCard>
             </div>
           </section>
 
@@ -643,10 +751,17 @@ function miniDotsFor(sub: ResolvedSubscription): boolean[] {
                   <template v-if="cell.filteredItems.length > 0">
                     <span
                       class="sv-cell-icon"
-                      :style="{ background: cell.filteredItems[0].brandColor }"
                       :title="cell.filteredItems.map((x) => x.task.title).join('、')"
                     >
-                      {{ cell.filteredItems[0].emblem }}
+                      <SubscriptionEmblem
+                        :brand-key="cell.filteredItems[0].brandKey"
+                        :icon-data="cell.filteredItems[0].iconData"
+                        :title="cell.filteredItems[0].task.title"
+                        :emblem="cell.filteredItems[0].emblem"
+                        :brand-color="cell.filteredItems[0].brandColor"
+                        :size="28"
+                        :radius="9"
+                      />
                       <em v-if="cell.filteredItems.length > 1" class="sv-cell-more">
                         +{{ cell.filteredItems.length - 1 }}
                       </em>
@@ -665,110 +780,145 @@ function miniDotsFor(sub: ResolvedSubscription): boolean[] {
     <!-- ==================== VIEW 2: 清单与详情 (Cadence Image 2 Master-Detail + Vertical-Pill Countdown Scale) ==================== -->
     <div v-else class="sv-scroll">
       <div class="sv-master-grid">
-        <!-- LEFT LIST & MULTI-ROW FILTERS -->
+        <!-- LEFT LIST & STREAMLINED SINGLE-ROW FILTERS -->
         <section class="sv-master-left">
           <div class="sml-head">
             <span class="sml-sub">我的订阅清单</span>
             <span class="sml-total tabular">{{ allSubscriptions.length }} <small>项</small></span>
           </div>
 
-          <div class="sml-search">
-            <FIcon name="search" :size="14" class="sml-s-ico" />
-            <input
-              v-model="searchText"
-              type="text"
-              class="sml-s-input"
-              placeholder="搜索订阅名称、分类或扣款渠道…"
-            />
-          </div>
-
-          <!-- Multi-Dimension Filter Pills -->
-          <div class="sml-filters">
-            <div class="sml-pill-row">
-              <button
-                type="button"
-                class="sml-chip"
-                :class="{ active: masterCat === 'all' }"
-                @click="masterCat = 'all'"
-              >
-                全部
-              </button>
-              <button
-                v-for="cat in SUBSCRIPTION_CATEGORIES"
-                :key="cat"
-                type="button"
-                class="sml-chip"
-                :class="{ active: masterCat === cat }"
-                @click="masterCat = cat"
-              >
-                {{ CATEGORY_META[cat].label }}
-              </button>
+          <div class="sml-search-row">
+            <div class="sml-search">
+              <FIcon name="search" :size="14" class="sml-s-ico" />
+              <input
+                v-model="searchText"
+                type="text"
+                class="sml-s-input"
+                placeholder="搜索订阅名称、分类或扣款渠道…"
+              />
             </div>
-
-            <div class="sml-pill-row">
-              <button
-                type="button"
-                class="sml-chip dark"
-                :class="{ active: masterPay === 'all' }"
-                @click="masterPay = 'all'"
-              >
-                全部扣款
-              </button>
-              <button
-                type="button"
-                class="sml-chip dark"
-                :class="{ active: masterPay === 'auto' }"
-                @click="masterPay = 'auto'"
-              >
-                自动扣款
-              </button>
-              <button
-                type="button"
-                class="sml-chip dark"
-                :class="{ active: masterPay === 'manual' }"
-                @click="masterPay = 'manual'"
-              >
-                主动 / 试用
-              </button>
-
-              <span class="sml-sep" aria-hidden="true" />
-
-              <button
-                v-for="cy in (['all', 'monthly', 'yearly', 'quarterly'] as const)"
-                :key="cy"
-                type="button"
-                class="sml-chip dark"
-                :class="{ active: masterCycle === cy }"
-                @click="masterCycle = cy"
-              >
-                {{ cy === 'all' ? '全周期' : CYCLE_META[cy].label }}
-              </button>
-            </div>
-          </div>
-
-          <!-- Scrollable List -->
-          <div class="sml-list">
             <button
+              type="button"
+              class="sml-filter-btn"
+              :class="{ active: masterFiltersOpen || hasSecondaryMasterFilter }"
+              title="按扣款方式或周期筛选"
+              aria-label="筛选扣款与周期"
+              @click="masterFiltersOpen = !masterFiltersOpen"
+            >
+              <FIcon name="filter" :size="14" />
+              <span v-if="hasSecondaryMasterFilter" class="sml-filter-dot" />
+            </button>
+          </div>
+
+          <!-- Single-Line Scrollable Category Strip -->
+          <div class="sml-cat-strip">
+            <button
+              type="button"
+              class="sml-chip"
+              :class="{ active: masterCat === 'all' }"
+              @click="masterCat = 'all'"
+            >
+              全部
+            </button>
+            <button
+              v-for="cat in SUBSCRIPTION_CATEGORIES"
+              :key="cat"
+              type="button"
+              class="sml-chip"
+              :class="{ active: masterCat === cat }"
+              @click="masterCat = cat"
+            >
+              {{ CATEGORY_META[cat].label }}
+            </button>
+          </div>
+
+          <!-- Collapsible Secondary Filter Strip (Pay Type + Cycle) -->
+          <div v-if="masterFiltersOpen" class="sml-pill-row sml-extra-filters">
+            <button
+              type="button"
+              class="sml-chip dark"
+              :class="{ active: masterPay === 'all' }"
+              @click="masterPay = 'all'"
+            >
+              全部扣款
+            </button>
+            <button
+              type="button"
+              class="sml-chip dark"
+              :class="{ active: masterPay === 'auto' }"
+              @click="masterPay = 'auto'"
+            >
+              自动扣款
+            </button>
+            <button
+              type="button"
+              class="sml-chip dark"
+              :class="{ active: masterPay === 'manual' }"
+              @click="masterPay = 'manual'"
+            >
+              主动 / 试用
+            </button>
+
+            <span class="sml-sep" aria-hidden="true" />
+
+            <button
+              v-for="cy in (['all', 'monthly', 'yearly', 'quarterly'] as const)"
+              :key="cy"
+              type="button"
+              class="sml-chip dark"
+              :class="{ active: masterCycle === cy }"
+              @click="masterCycle = cy"
+            >
+              {{ cy === 'all' ? '全周期' : CYCLE_META[cy].label }}
+            </button>
+          </div>
+
+          <!-- Scrollable List (Unified Fushi Tonal Row Cards with Adaptive Top-Right Watermarks!) -->
+          <div class="sml-list">
+            <FushiTonalCard
               v-for="sub in masterFilteredList"
               :key="sub.task.id"
-              type="button"
+              as="button"
+              variant="row"
+              interactive
+              :active="selectedSub?.task.id === sub.task.id"
+              :tint="sub.brandColor"
+              :watermark="sub.watermark"
               class="sml-row"
-              :class="{
-                active: selectedSub?.task.id === sub.task.id,
-                paused: sub.meta.status === 'paused' || sub.meta.status === 'cancelled',
-              }"
+              :class="{ paused: sub.meta.status === 'paused' || sub.meta.status === 'cancelled' }"
               @click="selectedId = sub.task.id"
             >
-              <span class="sml-emblem" :style="{ background: sub.brandColor }">{{ sub.emblem }}</span>
+              <template #emblem>
+                <SubscriptionEmblem
+                  :brand-key="sub.brandKey"
+                  :icon-data="sub.iconData"
+                  :title="sub.task.title"
+                  :emblem="sub.emblem"
+                  :brand-color="sub.brandColor"
+                  :size="38"
+                  :radius="11"
+                />
+              </template>
 
               <div class="sml-row-main">
                 <div class="sml-row-title-line">
                   <span class="sml-row-title">{{ sub.task.title }}</span>
-                  <span v-if="effectiveSplit(sub.meta) > 1" class="sml-tag split">
+                  <span v-if="sub.totalAccountsCount > 1" class="sml-tag">
+                    共{{ sub.totalAccountsCount }}号
+                  </span>
+                  <span v-else-if="effectiveSplit(sub.meta) > 1" class="sml-tag">
                     {{ effectiveSplit(sub.meta) }}人拼车
                   </span>
-                  <span v-if="sub.meta.status === 'trial'" class="sml-tag trial">试用</span>
-                  <span v-else-if="sub.meta.status === 'paused'" class="sml-tag muted">已暂停</span>
+                  <span v-if="sub.meta.status === 'ending'" class="sml-tag ending">已关续费</span>
+                  <span v-else-if="sub.meta.status === 'trial'" class="sml-tag trial">试用</span>
+                  <span v-else-if="sub.meta.status === 'paused'" class="sml-tag">已暂停</span>
+                  <span v-else-if="sub.meta.status === 'cancelled'" class="sml-tag">已退订</span>
+                  <span v-if="sub.promoPersonalOrig !== null" class="sml-tag promo">
+                    {{ sub.meta.promoLabel || '首期' }} {{ formatCurrencyAmount(sub.promoPersonalOrig, sub.meta.currency) }}
+                  </span>
+                  <span v-else-if="sub.discountOrig > 0" class="sml-tag promo">
+                    减{{ formatCurrencyAmount(sub.discountOrig, sub.meta.currency) }}
+                  </span>
                 </div>
                 <div class="sml-row-sub">
                   <span class="sml-dots" aria-hidden="true">
@@ -783,39 +933,60 @@ function miniDotsFor(sub: ResolvedSubscription): boolean[] {
               <div class="sml-row-price">
                 <strong class="tabular">{{ formatCurrencyAmount(sub.personalOrig, sub.meta.currency) }}</strong>
                 <div class="sml-cur-line">
-                  <span class="sml-cur-badge" :class="sub.meta.currency === 'CNY' ? 'cny' : 'fx'">
-                    {{ sub.meta.currency }}
-                  </span>
+                  <s v-if="sub.discountOrig > 0" class="sml-list-orig tabular">
+                    {{ formatCurrencyAmount(sub.originalListOrig, sub.meta.currency) }}
+                  </s>
+                  <span class="sml-cur-badge">{{ sub.meta.currency }}</span>
                   <span>/{{ CYCLE_META[sub.meta.cycle].short.replace('付', '') }}</span>
                 </div>
               </div>
-            </button>
+            </FushiTonalCard>
 
             <div v-if="!masterFilteredList.length" class="sml-empty">没有符合筛选条件的订阅</div>
           </div>
         </section>
 
-        <!-- RIGHT DETAIL STAGE (Watermark + -6deg Tilted Emblem + Cadence 22-Bar Vertical Countdown Scale) -->
+        <!-- RIGHT DETAIL STAGE (Unified Fushi Hero + 22-Bar Scale + Financial Breakdown + Multi-Account Manager) -->
         <section v-if="selectedSub" class="wm-card sv-detail-card">
-          <span class="wm-text sv-det-wm" aria-hidden="true">{{ selectedSub.watermark }}</span>
-
-          <div class="sv-det-hero">
-            <span class="tilted-emblem sv-det-emblem" :style="{ background: selectedSub.brandColor }">
-              {{ selectedSub.emblem }}
-            </span>
-            <div class="sv-det-title-wrap">
-              <div class="sv-det-name">{{ selectedSub.task.title }}</div>
+          <FushiTonalCard
+            variant="preview"
+            class="sv-det-fushi"
+            :tint="selectedSub.brandColor"
+            :watermark="selectedSub.watermark"
+            :progress="selectedSub.window.progressPct"
+          >
+            <template #emblem>
+              <SubscriptionEmblem
+                :brand-key="selectedSub.brandKey"
+                :icon-data="selectedSub.iconData"
+                :title="selectedSub.task.title"
+                :emblem="selectedSub.emblem"
+                :brand-color="selectedSub.brandColor"
+                :size="54"
+                :radius="15"
+              />
+            </template>
+            <div class="sv-det-title-row">
+              <div class="sv-det-title-wrap">
+                <div class="sv-det-name">{{ selectedSub.task.title }}</div>
+                <div class="sv-det-sub">
+                  {{ CYCLE_META[selectedSub.meta.cycle].label }} ·
+                  {{ STATUS_LABELS[selectedSub.meta.status] }}
+                  <template v-if="selectedSub.totalAccountsCount > 1"> · 共 {{ selectedSub.totalAccountsCount }} 个账号</template>
+                  · {{ formatDueCountdown(selectedSub.window.remainDays, selectedSub.meta.status) }}
+                </div>
+              </div>
               <div class="sv-det-monthly tabular">
                 <strong>¥{{ Math.round(selectedSub.monthlyCNY * 10) / 10 }}</strong>
                 <span>/ 月均折合</span>
               </div>
             </div>
-          </div>
+          </FushiTonalCard>
 
           <!-- CADENCE SIGNATURE 22-BAR VERTICAL-PILL COUNTDOWN SCALE -->
           <div class="sv-gauge-block">
             <div class="sv-gauge-meta">
-              <span>本周期倒计时刻度（亮柱 = 剩余天数）</span>
+              <span>本周期倒计时刻度</span>
               <strong class="sv-gauge-remain">
                 {{ formatDueCountdown(selectedSub.window.remainDays, selectedSub.meta.status) }}
               </strong>
@@ -838,66 +1009,188 @@ function miniDotsFor(sub: ResolvedSubscription): boolean[] {
             </div>
           </div>
 
-          <!-- Structured Spec Sheet -->
-          <div class="sv-spec-table">
-            <div class="sv-spec-row">
-              <span>分类</span>
-              <strong>{{ CATEGORY_META[selectedSub.meta.category].label }}</strong>
+          <!-- Compact 2-Column Financial & Status Spec Grid -->
+          <div class="sv-spec-grid">
+            <div class="sv-spec-cell">
+              <span>订阅状态</span>
+              <div class="sv-spec-val-line">
+                <strong>{{ STATUS_LABELS[selectedSub.meta.status] }}</strong>
+                <em class="sv-spec-pill" :class="selectedSub.meta.status">
+                  <template v-if="selectedSub.meta.status === 'ending'">到期止续</template>
+                  <template v-else-if="selectedSub.meta.status === 'trial'">试用护盾</template>
+                  <template v-else-if="selectedSub.meta.autoRenew">自动扣款</template>
+                  <template v-else>手动续费</template>
+                </em>
+              </div>
             </div>
-            <div class="sv-spec-row">
-              <span>计费周期</span>
-              <strong>{{ CYCLE_META[selectedSub.meta.cycle].label }}（{{ STATUS_LABELS[selectedSub.meta.status] }}）</strong>
+
+            <div class="sv-spec-cell">
+              <span>每期实付</span>
+              <div class="sv-spec-val-line tabular">
+                <strong>{{ formatCurrencyAmount(selectedSub.personalOrig, selectedSub.meta.currency) }}/{{ CYCLE_META[selectedSub.meta.cycle].short.replace('付', '') }}</strong>
+                <s v-if="selectedSub.discountOrig > 0" class="sv-spec-strike">
+                  {{ formatCurrencyAmount(selectedSub.originalListOrig, selectedSub.meta.currency) }}
+                </s>
+                <em v-if="selectedSub.discountOrig > 0" class="sv-spec-pill save">
+                  省{{ formatCurrencyAmount(selectedSub.discountOrig, selectedSub.meta.currency) }}
+                </em>
+                <em v-else-if="effectiveSplit(selectedSub.meta) > 1" class="sv-spec-pill">
+                  {{ effectiveSplit(selectedSub.meta) }}人拼车
+                </em>
+              </div>
             </div>
-            <div class="sv-spec-row">
-              <span>原始金额</span>
-              <strong class="tabular">
-                {{ formatCurrencyAmount(selectedSub.meta.price, selectedSub.meta.currency) }} {{ selectedSub.meta.currency }}
-                <template v-if="effectiveSplit(selectedSub.meta) > 1">
-                  （{{ effectiveSplit(selectedSub.meta) }}人平摊，实付 {{ formatCurrencyAmount(selectedSub.personalOrig, selectedSub.meta.currency) }}）
+
+            <div class="sv-spec-cell">
+              <span>优惠 / 首期特惠</span>
+              <div class="sv-spec-val-line tabular">
+                <template v-if="selectedSub.promoPersonalOrig !== null">
+                  <strong>
+                    {{ selectedSub.meta.promoLabel || '首期特惠' }}
+                    {{ formatCurrencyAmount(selectedSub.promoPersonalOrig, selectedSub.meta.currency) }}
+                  </strong>
+                  <em v-if="selectedSub.promoSavingsOrig > 0" class="sv-spec-pill save">
+                    首期省{{ formatCurrencyAmount(selectedSub.promoSavingsOrig, selectedSub.meta.currency) }}
+                  </em>
                 </template>
+                <template v-else-if="selectedSub.monthlySavedCNY >= 0.5">
+                  <strong>月均已省 ¥{{ Math.round(selectedSub.monthlySavedCNY * 10) / 10 }}</strong>
+                </template>
+                <template v-else>
+                  <strong class="muted">无额外优惠</strong>
+                </template>
+              </div>
+            </div>
+
+            <div class="sv-spec-cell">
+              <span>总月均 / 年化支出</span>
+              <strong class="tabular">
+                ¥{{ Math.round(selectedSub.monthlyCNY * 10) / 10 }}/月 · ¥{{ Math.round(selectedSub.yearlyCNY).toLocaleString('zh-CN') }}/年
               </strong>
             </div>
-            <div class="sv-spec-row">
-              <span>折合月支出</span>
-              <strong class="tabular">¥{{ selectedSub.monthlyCNY.toFixed(1) }}</strong>
+
+            <div class="sv-spec-cell">
+              <span>分类 / 扣款渠道</span>
+              <strong>{{ CATEGORY_META[selectedSub.meta.category].label }} · {{ selectedSub.meta.paymentMethod || '未设置' }}</strong>
             </div>
-            <div class="sv-spec-row">
-              <span>折合年支出</span>
-              <strong class="tabular">¥{{ Math.round(selectedSub.yearlyCNY).toLocaleString('zh-CN') }}</strong>
-            </div>
-            <div class="sv-spec-row">
-              <span>扣款渠道</span>
-              <strong>{{ selectedSub.meta.paymentMethod || '未设置' }}</strong>
-            </div>
-            <div class="sv-spec-row">
-              <span>下次扣款日</span>
+
+            <div class="sv-spec-cell">
+              <span>{{ selectedSub.meta.status === 'ending' ? '到期停止日' : '下次扣款日' }}</span>
               <strong class="tabular">{{ selectedSub.window.nextDate }}</strong>
             </div>
           </div>
 
-          <!-- Status Banner + Actions -->
-          <div class="sv-det-footer">
-            <div class="sv-renew-banner" :class="{ trial: selectedSub.meta.status === 'trial' }">
-              <FIcon :name="selectedSub.meta.status === 'trial' ? 'warning' : 'clock'" :size="14" />
-              <span v-if="selectedSub.meta.status === 'trial'">试用护盾已开启 · 到期前记得确认是否取消</span>
-              <span v-else-if="selectedSub.meta.autoRenew">自动扣款 · 到期自动续费</span>
-              <span v-else>主动付款 · 到期需手动续费</span>
+          <!-- Multi-Account / Sub-Subscriptions Section (e.g., Multiple AI Accounts under One Card!) -->
+          <div class="sv-subacc-box">
+            <div class="sv-subacc-head">
+              <div class="sv-subacc-title">
+                <span>多账号 / 子订阅</span>
+                <em class="sv-subacc-count tabular">共 {{ selectedSub.totalAccountsCount }} 号</em>
+              </div>
+              <button type="button" class="sv-subacc-add-btn" @click="openSubAccAdder(selectedSub)">
+                <FIcon name="add" :size="11" />
+                <span>{{ subAccAdderOpen ? '收起' : '添加子订阅' }}</span>
+              </button>
             </div>
 
-            <div class="sv-det-actions">
-              <button type="button" class="sv-act-btn" @click="openEditModal(selectedSub)">
-                <FIcon name="edit" :size="14" />
-                <span>编辑订阅</span>
-              </button>
-              <button type="button" class="sv-act-btn" @click="togglePauseSub(selectedSub)">
-                <FIcon :name="selectedSub.meta.status === 'paused' ? 'check' : 'timer'" :size="14" />
-                <span>{{ selectedSub.meta.status === 'paused' ? '恢复订阅' : '暂停计费' }}</span>
-              </button>
-              <button type="button" class="sv-act-btn danger" @click="removeSub(selectedSub)">
-                <FIcon name="delete" :size="14" />
-                <span>删除</span>
-              </button>
+            <div v-if="selectedSub.meta.accounts?.length" class="sv-subacc-list">
+              <!-- Primary Account Row -->
+              <div class="sv-subacc-row primary">
+                <div class="sv-sa-info">
+                  <strong>主账号</strong>
+                  <span v-if="selectedSub.meta.plan" class="sv-sa-plan">{{ selectedSub.meta.plan }}</span>
+                </div>
+                <span class="sv-sa-price tabular">
+                  {{ formatCurrencyAmount(selectedSub.personalOrig, selectedSub.meta.currency) }}/{{ CYCLE_META[selectedSub.meta.cycle].short.replace('付', '') }}
+                </span>
+                <span class="sv-sa-st" :class="selectedSub.meta.status">
+                  {{ STATUS_LABELS[selectedSub.meta.status] }}
+                </span>
+              </div>
+
+              <!-- Child Sub-Accounts -->
+              <div v-for="acc in selectedSub.meta.accounts" :key="acc.id" class="sv-subacc-row">
+                <div class="sv-sa-info">
+                  <strong>{{ acc.label }}</strong>
+                  <span v-if="acc.plan" class="sv-sa-plan">{{ acc.plan }}</span>
+                </div>
+                <span class="sv-sa-price tabular">
+                  {{ formatCurrencyAmount(acc.price, acc.currency ?? selectedSub.meta.currency) }}/{{ CYCLE_META[acc.cycle ?? selectedSub.meta.cycle].short.replace('付', '') }}
+                </span>
+                <button
+                  type="button"
+                  class="sv-sa-st clickable"
+                  :class="acc.status ?? 'active'"
+                  title="点击切换状态（订阅中 / 已关续费 / 已暂停）"
+                  @click="cycleDetailSubAccountStatus(selectedSub, acc.id)"
+                >
+                  {{ STATUS_LABELS[acc.status ?? 'active'] }}
+                </button>
+                <button
+                  type="button"
+                  class="sv-sa-del"
+                  title="移除子订阅"
+                  aria-label="移除子订阅"
+                  @click="removeDetailSubAccount(selectedSub, acc.id)"
+                >
+                  <FIcon name="close" :size="10" />
+                </button>
+              </div>
             </div>
+
+            <!-- Inline Quick Add Sub-Account Bar -->
+            <form
+              v-if="subAccAdderOpen"
+              class="sv-subacc-form"
+              @submit.prevent="addDetailSubAccount(selectedSub)"
+            >
+              <input
+                v-model="draftSubLabel"
+                type="text"
+                class="sv-sa-input"
+                placeholder="账号名（如 工作副号）"
+              />
+              <input
+                v-model="draftSubPlan"
+                type="text"
+                class="sv-sa-input plan"
+                placeholder="档位 (Plus/Max)"
+              />
+              <input
+                v-model="draftSubPrice"
+                type="number"
+                step="0.01"
+                min="0"
+                class="sv-sa-input num tabular"
+                :placeholder="`${CURRENCY_META[selectedSub.meta.currency].symbol}金额`"
+              />
+              <button type="submit" class="sv-sa-save">保存</button>
+            </form>
+          </div>
+
+          <!-- Compact Actions Footer (with 1-Tap Stop-Renewal Toggle!) -->
+          <div class="sv-det-actions">
+            <button type="button" class="sv-act-btn" @click="openEditModal(selectedSub)">
+              <FIcon name="edit" :size="13" />
+              <span>编辑</span>
+            </button>
+            <button
+              v-if="selectedSub.meta.status === 'active' || selectedSub.meta.status === 'ending'"
+              type="button"
+              class="sv-act-btn"
+              :class="{ warm: selectedSub.meta.status === 'ending' }"
+              @click="toggleEndingSub(selectedSub)"
+            >
+              <FIcon name="repeat" :size="13" />
+              <span>{{ selectedSub.meta.status === 'ending' ? '恢复续费' : '关闭续费' }}</span>
+            </button>
+            <button type="button" class="sv-act-btn" @click="togglePauseSub(selectedSub)">
+              <FIcon :name="selectedSub.meta.status === 'paused' ? 'check' : 'timer'" :size="13" />
+              <span>{{ selectedSub.meta.status === 'paused' ? '恢复' : '暂停' }}</span>
+            </button>
+            <button type="button" class="sv-act-btn danger" @click="removeSub(selectedSub)">
+              <FIcon name="delete" :size="13" />
+              <span>删除</span>
+            </button>
           </div>
         </section>
       </div>
@@ -916,69 +1209,11 @@ function miniDotsFor(sub: ResolvedSubscription): boolean[] {
 
 <style>
 .sub-page {
-  --sub-hero-bg: linear-gradient(135deg, #e5eaf5 0%, #d8e0ef 100%);
-  --sub-hero-ink: #1a2030;
-  --sub-hero-wm: rgba(26, 32, 48, 0.095);
-  --sub-hero-track: rgba(26, 32, 48, 0.14);
-
-  --tone-life-bg: linear-gradient(150deg, #e2ede4 0%, #d3e4d6 100%);
-  --tone-life-ink: #1f3925;
-  --tone-life-wm: rgba(31, 57, 37, 0.11);
-
-  --tone-ai-bg: linear-gradient(150deg, #e8e5f9 0%, #dcd7f4 100%);
-  --tone-ai-ink: #29205b;
-  --tone-ai-wm: rgba(41, 32, 91, 0.105);
-
-  --tone-cloud-bg: linear-gradient(150deg, #dceef3 0%, #cce4eb 100%);
-  --tone-cloud-ink: #143a47;
-  --tone-cloud-wm: rgba(20, 58, 71, 0.105);
-
-  --tone-media-bg: linear-gradient(150deg, #f3dde2 0%, #ebd0d6 100%);
-  --tone-media-ink: #4a1c26;
-  --tone-media-wm: rgba(74, 28, 38, 0.115);
-
-  --tone-work-bg: linear-gradient(150deg, #f7ecd6 0%, #f1e0bf 100%);
-  --tone-work-ink: #4b310a;
-  --tone-work-wm: rgba(75, 49, 10, 0.11);
-
-  --tone-other-bg: linear-gradient(150deg, #eaedf2 0%, #dfe3eb 100%);
-  --tone-other-ink: #272d38;
-  --tone-other-wm: rgba(39, 45, 56, 0.1);
-
   --sub-cal-bg: linear-gradient(155deg, #ffffff 0%, #f3f5fa 100%);
   --sub-cal-wm: rgba(26, 32, 48, 0.055);
 }
 
 html[data-ws-theme='dark'] .sub-page {
-  --sub-hero-bg: linear-gradient(135deg, #212738 0%, #181d2b 100%);
-  --sub-hero-ink: #eef2ff;
-  --sub-hero-wm: rgba(238, 242, 255, 0.085);
-  --sub-hero-track: rgba(238, 242, 255, 0.14);
-
-  --tone-life-bg: linear-gradient(150deg, #1d3124 0%, #16251b 100%);
-  --tone-life-ink: #d4f0da;
-  --tone-life-wm: rgba(212, 240, 218, 0.09);
-
-  --tone-ai-bg: linear-gradient(150deg, #272244 0%, #1d1936 100%);
-  --tone-ai-ink: #e4e0ff;
-  --tone-ai-wm: rgba(228, 224, 255, 0.09);
-
-  --tone-cloud-bg: linear-gradient(150deg, #162e37 0%, #11242b 100%);
-  --tone-cloud-ink: #cceff8;
-  --tone-cloud-wm: rgba(204, 239, 248, 0.09);
-
-  --tone-media-bg: linear-gradient(150deg, #371e26 0%, #2a171e 100%);
-  --tone-media-ink: #fad9e1;
-  --tone-media-wm: rgba(250, 217, 225, 0.095);
-
-  --tone-work-bg: linear-gradient(150deg, #352916 0%, #291f10 100%);
-  --tone-work-ink: #f8e5bf;
-  --tone-work-wm: rgba(248, 229, 191, 0.09);
-
-  --tone-other-bg: linear-gradient(150deg, #23262f 0%, #1a1d24 100%);
-  --tone-other-ink: #e2e6ef;
-  --tone-other-wm: rgba(226, 230, 239, 0.085);
-
   --sub-cal-bg: linear-gradient(155deg, #1b1e28 0%, #141720 100%);
   --sub-cal-wm: rgba(255, 255, 255, 0.06);
 }
@@ -999,10 +1234,10 @@ html[data-ws-theme='dark'] .sub-page {
   font-variant-numeric: tabular-nums;
 }
 
-/* Header */
+/* Header (Enlarged Bold Black Editorial Display Typography, Zero Red Eyebrow) */
 .sv-head {
   flex: none;
-  padding: 16px 24px 10px;
+  padding: 18px 24px 12px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1010,20 +1245,26 @@ html[data-ws-theme='dark'] .sub-page {
   gap: 12px;
 }
 
-.sv-eyebrow {
-  font-size: 11.5px;
-  font-weight: 700;
-  color: #e85d2a;
-  letter-spacing: 0.01em;
+.sv-head-left {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
 }
 
 .sv-title {
-  margin: 2px 0 0;
+  margin: 0;
   font-family: var(--font-display);
-  font-size: 25px;
-  font-weight: 800;
-  letter-spacing: -0.03em;
-  line-height: 1.15;
+  font-size: 31px;
+  font-weight: 880;
+  letter-spacing: -0.038em;
+  line-height: 1.06;
+  color: var(--ws-ink);
+}
+
+.sv-date-chip {
+  font-size: 13px;
+  font-weight: 620;
+  color: var(--ws-ink-muted);
 }
 
 .sv-head-right {
@@ -1118,7 +1359,7 @@ html[data-ws-theme='dark'] .sub-page {
   transform: scale(0.96);
 }
 
-/* Shared Editorial Watermark Card & Tilted Emblem */
+/* Shared Calendar / Detail Shell Card */
 .wm-card {
   position: relative;
   overflow: hidden;
@@ -1138,26 +1379,6 @@ html[data-ws-theme='dark'] .sub-page {
   z-index: 0;
 }
 
-.tilted-emblem {
-  border-radius: 18px;
-  transform: rotate(-6deg);
-  box-shadow: 0 12px 24px rgba(15, 20, 35, 0.2), 0 2px 6px rgba(15, 20, 35, 0.12);
-  transition: transform 260ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 220ms ease;
-}
-
-.wm-card:hover .tilted-emblem {
-  transform: rotate(-2deg) scale(1.04);
-}
-
-/* Tone Helpers */
-.tone-hero { background: var(--sub-hero-bg); color: var(--sub-hero-ink); }
-.tone-life { background: var(--tone-life-bg); color: var(--tone-life-ink); --tile-wm: var(--tone-life-wm); }
-.tone-ai { background: var(--tone-ai-bg); color: var(--tone-ai-ink); --tile-wm: var(--tone-ai-wm); }
-.tone-cloud { background: var(--tone-cloud-bg); color: var(--tone-cloud-ink); --tile-wm: var(--tone-cloud-wm); }
-.tone-media { background: var(--tone-media-bg); color: var(--tone-media-ink); --tile-wm: var(--tone-media-wm); }
-.tone-work { background: var(--tone-work-bg); color: var(--tone-work-ink); --tile-wm: var(--tone-work-wm); }
-.tone-other { background: var(--tone-other-bg); color: var(--tone-other-ink); --tile-wm: var(--tone-other-wm); }
-
 /* Empty Starter State */
 .sv-empty-stage {
   flex: 1;
@@ -1170,48 +1391,33 @@ html[data-ws-theme='dark'] .sub-page {
 .sv-empty-card {
   max-width: 680px;
   width: 100%;
-  padding: 32px;
-  display: flex;
-  align-items: center;
+  padding: 28px 30px;
   gap: 24px;
 }
 
-.sv-empty-wm {
-  font-size: 86px;
-  top: -8px;
-  right: -12px;
-  color: var(--sub-hero-wm);
-}
-
 .sv-empty-emblem {
-  width: 72px;
-  height: 72px;
-  flex: none;
-  background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+  width: 70px;
+  height: 70px;
+  border-radius: 18px;
+  background: linear-gradient(135deg, #253456 0%, #141d33 100%);
   color: #fff;
   display: inline-grid;
   place-items: center;
-  position: relative;
-  z-index: 1;
-}
-
-.sv-empty-copy {
-  position: relative;
-  z-index: 1;
 }
 
 .sv-empty-copy h2 {
   margin: 0;
   font-size: 20px;
-  font-weight: 800;
+  font-weight: 820;
   letter-spacing: -0.02em;
+  color: var(--fc-ink);
 }
 
 .sv-empty-copy p {
   margin: 8px 0 0;
   font-size: 13.5px;
   line-height: 1.6;
-  opacity: 0.78;
+  color: var(--fc-sub);
 }
 
 .sv-empty-acts {
@@ -1237,13 +1443,13 @@ html[data-ws-theme='dark'] .sub-page {
 }
 
 .sv-btn-solid {
-  background: var(--sub-hero-ink);
-  color: var(--ws-card-bg);
+  background: var(--fc-fill);
+  color: #ffffff;
 }
 
 .sv-btn-soft {
-  background: rgba(255, 255, 255, 0.55);
-  color: var(--sub-hero-ink);
+  background: color-mix(in srgb, var(--fc-ink) 11%, transparent);
+  color: var(--fc-ink);
 }
 
 /* Main Scrollable Body */
@@ -1278,40 +1484,24 @@ html[data-ws-theme='dark'] .sub-page {
   min-width: 0;
 }
 
-/* Hero Spend Card */
-.sv-hero-card {
-  padding: 20px 22px;
-  display: flex;
-  align-items: center;
-  gap: 18px;
-}
-
-.sv-hero-wm {
-  font-size: 74px;
-  top: -8px;
-  right: 10px;
-  color: var(--sub-hero-wm);
-}
-
+/* Hero Spend Card (FushiTonalCard inner typography) */
 .sv-hero-emblem {
-  width: 70px;
-  height: 70px;
-  flex: none;
-  background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+  width: 68px;
+  height: 68px;
+  border-radius: 18px;
+  background: linear-gradient(145deg, #27375c 0%, #151f36 100%);
   color: #ffffff;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  position: relative;
-  z-index: 1;
 }
 
 .she-mon {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 800;
-  letter-spacing: 0.1em;
-  opacity: 0.65;
+  letter-spacing: 0.04em;
+  opacity: 0.72;
 }
 
 .she-day {
@@ -1319,13 +1509,6 @@ html[data-ws-theme='dark'] .sub-page {
   font-weight: 900;
   line-height: 1.05;
   font-variant-numeric: tabular-nums;
-}
-
-.sv-hero-body {
-  position: relative;
-  z-index: 1;
-  flex: 1;
-  min-width: 0;
 }
 
 .sv-hero-top {
@@ -1337,9 +1520,10 @@ html[data-ws-theme='dark'] .sub-page {
 }
 
 .sv-hero-label {
-  font-size: 16px;
-  font-weight: 800;
+  font-size: 17px;
+  font-weight: 840;
   letter-spacing: -0.02em;
+  color: var(--fc-ink);
 }
 
 .sv-hero-sub {
@@ -1349,14 +1533,14 @@ html[data-ws-theme='dark'] .sub-page {
   flex-wrap: wrap;
   gap: 6px;
   font-size: 12px;
-  font-weight: 600;
-  opacity: 0.72;
+  font-weight: 620;
+  color: var(--fc-sub);
 }
 
 .sv-save-pill {
   padding: 1px 7px;
   border-radius: 999px;
-  background: rgba(16, 185, 129, 0.18);
+  background: color-mix(in srgb, #10b981 18%, transparent);
   color: #0e8a62;
   font-size: 11px;
   font-weight: 750;
@@ -1367,39 +1551,12 @@ html[data-ws-theme='dark'] .sub-page {
   font-weight: 900;
   letter-spacing: -0.03em;
   line-height: 1;
+  color: var(--fc-ink);
 }
 
 .sv-hero-amount small {
   font-size: 18px;
   opacity: 0.58;
-}
-
-.sv-hero-progress {
-  margin-top: 13px;
-}
-
-.sv-hp-labels {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 11.5px;
-  font-weight: 700;
-  opacity: 0.78;
-  margin-bottom: 6px;
-}
-
-.sv-thick-track {
-  height: 9px;
-  border-radius: 999px;
-  background: var(--sub-hero-track);
-  overflow: hidden;
-}
-
-.sv-thick-fill {
-  height: 100%;
-  border-radius: 999px;
-  background: var(--sub-hero-ink);
-  transition: width 360ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 /* Section Label Row */
@@ -1427,12 +1584,12 @@ html[data-ws-theme='dark'] .sub-page {
   text-decoration: underline;
 }
 
-/* Proportional Watermark Category Treemap */
+/* Proportional Fushi Tonal Category Treemap */
 .sv-treemap {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
-  min-height: 360px;
+  min-height: 392px;
 }
 
 .sv-treemap.single {
@@ -1441,51 +1598,16 @@ html[data-ws-theme='dark'] .sub-page {
 }
 
 .tm-tile {
-  border: 0;
-  text-align: left;
-  font: inherit;
-  padding: 18px;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  cursor: pointer;
-}
-
-.tm-tile:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 14px 32px rgba(20, 24, 38, 0.1);
-}
-
-.tm-tile.active {
-  box-shadow: 0 0 0 2.5px #e85d2a, 0 14px 28px rgba(232, 93, 42, 0.18);
-}
-
-.tm-wm-lg {
-  font-size: 72px;
-  top: 10px;
-  right: -10px;
-  color: var(--tile-wm);
-}
-
-.tm-wm-sm {
-  font-size: 54px;
-  top: -4px;
-  right: -6px;
-  color: var(--tile-wm);
-}
-
-.tm-top,
-.tm-bottom,
-.tm-bottom-inline {
-  position: relative;
-  z-index: 1;
+  width: 100%;
+  height: 100%;
 }
 
 .tm-name {
   display: block;
-  font-size: 15.5px;
-  font-weight: 820;
+  font-size: 16px;
+  font-weight: 840;
   letter-spacing: -0.02em;
+  color: var(--fc-ink);
 }
 
 .tm-sub {
@@ -1493,7 +1615,12 @@ html[data-ws-theme='dark'] .sub-page {
   margin-top: 2px;
   font-size: 12px;
   font-weight: 640;
-  opacity: 0.72;
+  color: var(--fc-sub);
+}
+
+.tm-bottom {
+  margin-top: auto;
+  padding-top: 12px;
 }
 
 .tm-price {
@@ -1501,20 +1628,7 @@ html[data-ws-theme='dark'] .sub-page {
   font-weight: 900;
   letter-spacing: -0.03em;
   line-height: 1.05;
-}
-
-.tm-bar-track {
-  margin-top: 10px;
-  height: 7px;
-  border-radius: 999px;
-  background: var(--tile-wm);
-  overflow: hidden;
-}
-
-.tm-bar-fill {
-  height: 100%;
-  border-radius: 999px;
-  background: currentColor;
+  color: var(--fc-ink);
 }
 
 .tm-stack {
@@ -1524,11 +1638,12 @@ html[data-ws-theme='dark'] .sub-page {
 }
 
 .tm-sub-tile {
-  padding: 15px 17px;
-  min-height: 92px;
+  min-height: 98px;
 }
 
 .tm-bottom-inline {
+  margin-top: auto;
+  padding-top: 6px;
   display: flex;
   align-items: baseline;
   justify-content: space-between;
@@ -1539,12 +1654,13 @@ html[data-ws-theme='dark'] .sub-page {
   font-size: 22px;
   font-weight: 900;
   letter-spacing: -0.025em;
+  color: var(--fc-ink);
 }
 
 .tm-pct-tag {
   font-size: 11.5px;
   font-weight: 760;
-  opacity: 0.75;
+  color: var(--fc-sub);
 }
 
 /* RESTORED Staggered Gradient Membership Deck (Image 1 Signature + Watermark!) */
@@ -1614,22 +1730,15 @@ html[data-ws-theme='dark'] .sub-page {
 
 .stagger-deck {
   position: relative;
-  height: 168px;
-  border-radius: 20px;
+  height: 206px;
+  border-radius: 24px;
   overflow: hidden;
   cursor: pointer;
   user-select: none;
 }
 
-.stagger-card {
+.stagger-deck .stagger-card {
   position: absolute;
-  border-radius: 22px;
-  padding: 15px 18px;
-  color: #ffffff;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
   transition:
     transform 360ms cubic-bezier(0.22, 1, 0.36, 1),
     top 360ms cubic-bezier(0.22, 1, 0.36, 1),
@@ -1638,95 +1747,57 @@ html[data-ws-theme='dark'] .sub-page {
     box-shadow 260ms ease;
 }
 
-.stagger-card[data-pos='0'] {
-  top: 38px;
+.stagger-deck .stagger-card[data-pos='0'] {
+  top: 42px;
   left: 0;
-  right: -12px;
-  height: 130px;
+  right: 0;
+  height: 162px;
   z-index: 30;
   transform: translateY(0) scale(1);
-  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.18), 0 2px 6px rgba(0, 0, 0, 0.08);
 }
 
-.stagger-card[data-pos='1'] {
-  top: 8px;
-  left: 48px;
-  right: -14px;
-  height: 118px;
+.stagger-deck .stagger-card[data-pos='1'] {
+  top: 12px;
+  left: 26px;
+  right: 12px;
+  height: 148px;
   z-index: 20;
   opacity: 0.96;
   transform: translateY(0) scale(0.985);
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.12);
 }
 
-.stagger-card[data-pos='2'] {
+.stagger-deck .stagger-card[data-pos='2'] {
   top: 0;
-  left: 96px;
-  right: -16px;
-  height: 106px;
+  left: 52px;
+  right: 24px;
+  height: 134px;
   z-index: 10;
-  opacity: 0.72;
-  transform: translateY(-4px) scale(0.95);
+  opacity: 0.78;
+  transform: translateY(-2px) scale(0.955);
 }
 
 .stagger-deck:hover .stagger-card[data-pos='1'] {
-  transform: translateY(-5px) scale(0.99);
-}
-
-.stagger-wm {
-  position: absolute;
-  right: 18px;
-  top: -10px;
-  font-size: 62px;
-  font-weight: 900;
-  letter-spacing: -0.04em;
-  line-height: 1;
-  color: rgba(255, 255, 255, 0.16);
-  pointer-events: none;
-  white-space: nowrap;
+  transform: translateY(-4px) scale(0.99);
 }
 
 .sc-top,
 .sc-bottom {
-  position: relative;
-  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
 }
 
-.sc-brand {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-}
-
-.sc-emblem {
-  width: 42px;
-  height: 42px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.22);
-  backdrop-filter: blur(8px);
-  color: #ffffff;
-  font-size: 19px;
-  font-weight: 900;
-  display: inline-grid;
-  place-items: center;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
-  flex: none;
-}
-
 .sc-brand-copy {
   min-width: 0;
+  flex: 1;
 }
 
 .sc-name {
-  font-size: 17px;
-  font-weight: 820;
+  font-size: 16.5px;
+  font-weight: 840;
   line-height: 1.15;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+  color: var(--fc-ink);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1734,24 +1805,27 @@ html[data-ws-theme='dark'] .sub-page {
 
 .sc-cycle {
   margin-top: 2px;
-  font-size: 12px;
-  font-weight: 560;
-  opacity: 0.86;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--fc-sub);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sc-due-pill {
   flex: none;
-  padding: 4px 10px;
+  padding: 3px 9px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.24);
-  backdrop-filter: blur(8px);
+  background: color-mix(in srgb, var(--fc-ink) 12%, transparent);
+  color: var(--fc-ink);
   font-size: 11px;
   font-weight: 760;
 }
 
 .sc-bottom {
   justify-content: flex-start;
-  gap: 36px;
+  gap: 28px;
 }
 
 .sc-kv {
@@ -1761,22 +1835,23 @@ html[data-ws-theme='dark'] .sub-page {
 }
 
 .sc-k {
-  font-size: 11px;
-  font-weight: 560;
-  opacity: 0.8;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--fc-sub);
 }
 
 .sc-v {
-  font-size: 17px;
-  font-weight: 850;
+  font-size: 16px;
+  font-weight: 860;
   line-height: 1.15;
+  color: var(--fc-ink);
 }
 
 .sc-v em {
   font-style: normal;
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 650;
-  opacity: 0.82;
+  color: var(--fc-sub);
   margin-left: 4px;
 }
 
@@ -1917,9 +1992,6 @@ html[data-ws-theme='dark'] .sub-page {
   width: 28px;
   height: 28px;
   border-radius: 9px;
-  color: #ffffff;
-  font-size: 13px;
-  font-weight: 900;
   display: inline-grid;
   place-items: center;
   box-shadow: 0 3px 8px rgba(0, 0, 0, 0.14);
@@ -1999,7 +2071,15 @@ html[data-ws-theme='dark'] .sub-page {
   color: var(--ws-ink-muted);
 }
 
+.sml-search-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
 .sml-search {
+  flex: 1;
+  min-width: 0;
   height: 36px;
   padding: 0 12px;
   border-radius: 12px;
@@ -2025,10 +2105,49 @@ html[data-ws-theme='dark'] .sub-page {
   outline: none;
 }
 
-.sml-filters {
+.sml-filter-btn {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  border: 1px solid var(--ws-hairline);
+  background: var(--ws-card-subtle);
+  color: var(--ws-ink-secondary);
+  display: inline-grid;
+  place-items: center;
+  cursor: pointer;
+  flex: none;
+  transition: background-color 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+
+.sml-filter-btn:hover,
+.sml-filter-btn.active {
+  background: var(--ws-ink);
+  border-color: var(--ws-ink);
+  color: var(--ws-ink-inverse);
+}
+
+.sml-filter-dot {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #e85d2a;
+}
+
+.sml-cat-strip {
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 1px 0;
+}
+
+.sml-cat-strip::-webkit-scrollbar {
+  display: none;
 }
 
 .sml-pill-row {
@@ -2036,6 +2155,13 @@ html[data-ws-theme='dark'] .sub-page {
   align-items: center;
   flex-wrap: wrap;
   gap: 5px;
+}
+
+.sml-extra-filters {
+  padding: 7px 9px;
+  border-radius: 12px;
+  background: var(--ws-card-subtle);
+  border: 1px solid var(--ws-hairline);
 }
 
 .sml-sep {
@@ -2046,6 +2172,7 @@ html[data-ws-theme='dark'] .sub-page {
 }
 
 .sml-chip {
+  flex: none;
   height: 25px;
   padding: 0 10px;
   border: 0;
@@ -2072,49 +2199,11 @@ html[data-ws-theme='dark'] .sub-page {
 .sml-list {
   display: flex;
   flex-direction: column;
-  gap: 7px;
-}
-
-.sml-row {
-  width: 100%;
-  padding: 10px 12px;
-  border-radius: 15px;
-  border: 1px solid var(--ws-hairline);
-  background: var(--ws-card-bg);
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  cursor: pointer;
-  transition: border-color 140ms ease, background-color 140ms ease, transform 120ms ease;
-}
-
-.sml-row:hover {
-  border-color: var(--ws-hairline-strong);
-  background: var(--ws-card-subtle);
-}
-
-.sml-row.active {
-  border-color: #e85d2a;
-  box-shadow: 0 4px 14px rgba(232, 93, 42, 0.1);
+  gap: 8px;
 }
 
 .sml-row.paused {
   opacity: 0.56;
-}
-
-.sml-emblem {
-  width: 38px;
-  height: 38px;
-  border-radius: 12px;
-  color: #fff;
-  font-size: 16px;
-  font-weight: 900;
-  display: inline-grid;
-  place-items: center;
-  flex: none;
 }
 
 .sml-row-main {
@@ -2129,8 +2218,9 @@ html[data-ws-theme='dark'] .sub-page {
 }
 
 .sml-row-title {
-  font-size: 13.5px;
-  font-weight: 700;
+  font-size: 14px;
+  font-weight: 780;
+  color: var(--fc-ink);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2141,22 +2231,26 @@ html[data-ws-theme='dark'] .sub-page {
   padding: 1px 6px;
   border-radius: 5px;
   font-size: 10px;
-  font-weight: 750;
+  font-weight: 740;
+  background: color-mix(in srgb, var(--fc-ink) 12%, transparent);
+  color: var(--fc-ink);
 }
 
-.sml-tag.split {
-  background: rgba(37, 99, 235, 0.13);
-  color: #2563eb;
+.sml-tag.trial,
+.sml-tag.ending {
+  background: color-mix(in srgb, #e85d2a 18%, transparent);
+  color: #c74315;
 }
 
-.sml-tag.trial {
-  background: rgba(232, 93, 42, 0.14);
-  color: #e85d2a;
+.sml-tag.promo {
+  background: color-mix(in srgb, #0e9f6e 16%, transparent);
+  color: #0b7a55;
 }
 
-.sml-tag.muted {
-  background: var(--ws-stone-pill);
-  color: var(--ws-ink-muted);
+.sml-list-orig {
+  font-size: 10px;
+  opacity: 0.55;
+  margin-right: 2px;
 }
 
 .sml-row-sub {
@@ -2165,7 +2259,7 @@ html[data-ws-theme='dark'] .sub-page {
   align-items: center;
   gap: 7px;
   font-size: 11px;
-  color: var(--ws-ink-muted);
+  color: var(--fc-sub);
 }
 
 .sml-dots {
@@ -2177,16 +2271,16 @@ html[data-ws-theme='dark'] .sub-page {
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: var(--ws-hairline-strong);
+  background: var(--fc-track);
 }
 
 .sml-dots i.lit {
-  background: #e85d2a;
+  background: var(--fc-fill);
 }
 
 .sml-due.urgent {
-  color: #e85d2a;
-  font-weight: 700;
+  color: var(--fc-ink);
+  font-weight: 760;
 }
 
 .sml-row-price {
@@ -2196,8 +2290,10 @@ html[data-ws-theme='dark'] .sub-page {
 
 .sml-row-price strong {
   display: block;
-  font-size: 14px;
-  font-weight: 820;
+  font-size: 15px;
+  font-weight: 860;
+  color: var(--fc-ink);
+  line-height: 1.1;
 }
 
 .sml-cur-line {
@@ -2206,24 +2302,16 @@ html[data-ws-theme='dark'] .sub-page {
   align-items: center;
   gap: 3px;
   font-size: 10px;
-  color: var(--ws-ink-muted);
+  color: var(--fc-sub);
 }
 
 .sml-cur-badge {
-  padding: 1px 4.5px;
+  padding: 1px 5px;
   border-radius: 4px;
   font-size: 9.5px;
   font-weight: 800;
-}
-
-.sml-cur-badge.cny {
-  background: rgba(232, 76, 61, 0.14);
-  color: #d93e30;
-}
-
-.sml-cur-badge.fx {
-  background: rgba(16, 185, 129, 0.15);
-  color: #0e9f6e;
+  background: color-mix(in srgb, var(--fc-ink) 12%, transparent);
+  color: var(--fc-ink);
 }
 
 .sml-empty {
@@ -2233,66 +2321,70 @@ html[data-ws-theme='dark'] .sub-page {
   color: var(--ws-ink-muted);
 }
 
-/* Right Detail Card (Cadence Image 2 + Watermark) */
+/* Right Detail Card (Unified Fushi Tonal Hero + Cadence 22-Bar Scale) */
 .sv-detail-card {
-  padding: 24px;
+  padding: 20px;
   background: var(--ws-card-bg);
   border: 1px solid var(--ws-hairline);
   display: flex;
   flex-direction: column;
-  gap: 20px;
-}
-
-.sv-det-wm {
-  font-size: 86px;
-  top: 4px;
-  right: -12px;
-  color: var(--sub-cal-wm);
-}
-
-.sv-det-hero {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  align-items: center;
   gap: 18px;
 }
 
-.sv-det-emblem {
-  width: 62px;
-  height: 62px;
-  color: #ffffff;
-  font-size: 26px;
-  font-weight: 900;
-  display: inline-grid;
-  place-items: center;
-  flex: none;
+.sv-det-fushi {
+  width: 100%;
+}
+
+.sv-det-title-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.sv-det-title-wrap {
+  min-width: 0;
+  flex: 1;
 }
 
 .sv-det-name {
   font-size: 19px;
-  font-weight: 820;
+  font-weight: 840;
   letter-spacing: -0.02em;
+  color: var(--fc-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sv-det-sub {
+  margin-top: 3px;
+  font-size: 12px;
+  font-weight: 620;
+  color: var(--fc-sub);
 }
 
 .sv-det-monthly {
-  margin-top: 3px;
+  text-align: right;
   display: flex;
   align-items: baseline;
-  gap: 6px;
+  gap: 5px;
+  flex: none;
 }
 
 .sv-det-monthly strong {
-  font-size: 34px;
+  font-size: 30px;
   font-weight: 900;
   letter-spacing: -0.03em;
   line-height: 1;
+  color: var(--fc-ink);
 }
 
 .sv-det-monthly span {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--ws-ink-muted);
+  font-size: 11.5px;
+  font-weight: 620;
+  color: var(--fc-sub);
 }
 
 /* Cadence 22-Bar Vertical-Pill Countdown Scale */
@@ -2368,73 +2460,307 @@ html[data-ws-theme='dark'] .sub-page {
   margin-top: 2px;
 }
 
-/* Spec Table */
-.sv-spec-table {
+/* Compact 2-Column Structured Spec Grid */
+.sv-spec-grid {
   position: relative;
   z-index: 1;
-  border-radius: 16px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.sv-spec-cell {
+  padding: 10px 13px;
+  border-radius: 13px;
   border: 1px solid var(--ws-hairline);
   background: var(--ws-card-subtle);
-  overflow: hidden;
-}
-
-.sv-spec-row {
-  padding: 10px 16px;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  font-size: 12.5px;
-  border-bottom: 1px solid var(--ws-hairline);
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
 }
 
-.sv-spec-row:last-child {
-  border-bottom: 0;
-}
-
-.sv-spec-row span {
+.sv-spec-cell span {
+  font-size: 11px;
+  font-weight: 600;
   color: var(--ws-ink-muted);
 }
 
-.sv-spec-row strong {
-  font-weight: 700;
-  text-align: right;
+.sv-spec-cell strong {
+  font-size: 13px;
+  font-weight: 740;
+  color: var(--ws-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-/* Detail Footer */
-.sv-det-footer {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+.sv-spec-cell strong.muted {
+  color: var(--ws-ink-muted);
+  font-weight: 600;
 }
 
-.sv-renew-banner {
-  height: 38px;
-  padding: 0 14px;
-  border-radius: 999px;
-  border: 1px solid var(--ws-hairline);
-  background: var(--ws-card-subtle);
-  color: var(--ws-ink-secondary);
+.sv-spec-val-line {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 7px;
-  font-size: 12.5px;
-  font-weight: 620;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
 }
 
-.sv-renew-banner.trial {
-  background: color-mix(in srgb, #e85d2a 11%, var(--ws-card-bg));
-  border-color: color-mix(in srgb, #e85d2a 26%, transparent);
+.sv-spec-strike {
+  font-size: 11.5px;
+  color: var(--ws-ink-muted);
+  opacity: 0.72;
+}
+
+.sv-spec-pill {
+  font-style: normal;
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 720;
+  background: var(--ws-stone-pill);
+  color: var(--ws-ink-secondary);
+}
+
+.sv-spec-pill.ending,
+.sv-spec-pill.trial {
+  background: color-mix(in srgb, #e85d2a 14%, transparent);
   color: #e85d2a;
 }
 
-.sv-det-actions {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+.sv-spec-pill.save {
+  background: color-mix(in srgb, #0e9f6e 15%, transparent);
+  color: #0e8a62;
+}
+
+/* Multi-Account / Sub-Subscriptions Section */
+.sv-subacc-box {
+  position: relative;
+  z-index: 1;
+  padding: 11px 13px;
+  border-radius: 15px;
+  border: 1px solid var(--ws-hairline);
+  background: var(--ws-card-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.sv-subacc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 8px;
+}
+
+.sv-subacc-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 720;
+  color: var(--ws-ink);
+}
+
+.sv-subacc-count {
+  font-style: normal;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--ws-stone-pill);
+  color: var(--ws-ink-secondary);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.sv-subacc-add-btn {
+  height: 25px;
+  padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid var(--ws-hairline);
+  background: var(--ws-card-bg);
+  color: var(--ws-ink);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 660;
+  cursor: pointer;
+  transition: background-color 140ms ease, transform 120ms ease;
+}
+
+.sv-subacc-add-btn:hover {
+  background: var(--ws-pill-hover);
+}
+
+.sv-subacc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sv-subacc-row {
+  padding: 7px 10px;
+  border-radius: 11px;
+  border: 1px solid var(--ws-hairline);
+  background: var(--ws-card-bg);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sv-subacc-row.primary {
+  background: color-mix(in srgb, var(--ws-ink) 3.5%, var(--ws-card-bg));
+}
+
+.sv-sa-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sv-sa-info strong {
+  font-size: 12.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sv-sa-plan {
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--ws-stone-pill);
+  color: var(--ws-ink-secondary);
+  font-size: 10px;
+  font-weight: 700;
+  flex: none;
+}
+
+.sv-sa-price {
+  font-size: 12.5px;
+  font-weight: 780;
+  color: var(--ws-ink);
+  flex: none;
+}
+
+.sv-sa-st {
+  height: 22px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--ws-stone-pill);
+  color: var(--ws-ink-secondary);
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+
+.sv-sa-st.clickable {
+  cursor: pointer;
+}
+
+.sv-sa-st.active {
+  background: color-mix(in srgb, #0e9f6e 15%, transparent);
+  color: #0e8a62;
+}
+
+.sv-sa-st.ending,
+.sv-sa-st.trial {
+  background: color-mix(in srgb, #e85d2a 14%, transparent);
+  color: #e85d2a;
+}
+
+.sv-sa-del {
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ws-ink-muted);
+  display: inline-grid;
+  place-items: center;
+  cursor: pointer;
+  flex: none;
+}
+
+.sv-sa-del:hover {
+  background: rgba(232, 76, 61, 0.12);
+  color: #d93e30;
+}
+
+.sv-subacc-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.sv-sa-input {
+  flex: 1.2;
+  min-width: 110px;
+  height: 31px;
+  padding: 0 9px;
+  border-radius: 9px;
+  border: 1px solid var(--ws-hairline);
+  background: var(--ws-card-bg);
+  color: var(--ws-ink);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.sv-sa-input.plan {
+  flex: 0.9;
+  min-width: 82px;
+}
+
+.sv-sa-input.num {
+  flex: 0 0 74px;
+  min-width: 74px;
+}
+
+.sv-sa-input:focus {
+  border-color: var(--ws-ink);
+}
+
+.sv-sa-save {
+  height: 31px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--ws-ink);
+  color: var(--ws-ink-inverse);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+  flex: none;
+}
+
+.sv-det-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.sv-det-actions .sv-act-btn {
+  flex: 1;
+  min-width: 86px;
+}
+
+.sv-act-btn.warm {
+  background: color-mix(in srgb, #e85d2a 11%, var(--ws-card-bg));
+  border-color: color-mix(in srgb, #e85d2a 28%, transparent);
+  color: #e85d2a;
 }
 
 .sv-act-btn {
@@ -2476,18 +2802,33 @@ html[data-ws-theme='dark'] .sub-page {
 }
 
 @media (max-width: 639px) {
-  .sv-hero-card {
-    padding: 16px;
-    gap: 14px;
+  .sv-head.phone {
+    padding: 0;
+    margin-bottom: 10px;
+  }
+
+  .sv-head.phone .sv-head-right {
+    width: 100%;
+    justify-content: space-between;
+    flex-wrap: nowrap;
+    gap: 6px;
+  }
+
+  .sv-add-btn.icon {
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    justify-content: center;
+    flex: none;
   }
 
   .sv-hero-emblem {
-    width: 58px;
-    height: 58px;
+    width: 56px;
+    height: 56px;
   }
 
   .sv-hero-amount {
-    font-size: 26px;
+    font-size: 25px;
   }
 
   .sv-treemap {
@@ -2495,10 +2836,17 @@ html[data-ws-theme='dark'] .sub-page {
     min-height: 0;
   }
 
+  .stagger-deck {
+    height: 198px;
+  }
+
+  .stagger-deck .stagger-card[data-pos='0'] {
+    height: 156px;
+  }
+
   .sv-empty-card {
     flex-direction: column;
     align-items: flex-start;
-    padding: 22px;
   }
 
   .sv-det-actions {

@@ -24,12 +24,12 @@ export const ungroupedCollapsed = ref(false);
 
 export const rows = computed<GanttRow[]>(() => {
   const g = gs.value;
-  const all = buildRows(taskList.value.filter((t) => !t.countdownOnly && !t.subscriptionOnly), groupList.value, { hideDone: g.hideDone, hideSingleDay: g.hideSingleDay, groupFilter: g.groupFilter });
+  const all = buildRows(taskList.value.filter((t) => !t.countdownOnly && !t.subscriptionOnly && !t.habitOnly), groupList.value, { hideDone: g.hideDone, hideSingleDay: g.hideSingleDay, groupFilter: g.groupFilter });
   return ungroupedCollapsed.value ? all.filter((r) => r.kind === 'group' || r.groupId !== UNGROUPED) : all;
 });
 
 export const range = computed(() => {
-  const r = chartRange(taskList.value.filter((t) => !t.repeat && !t.countdownOnly && !t.subscriptionOnly), now.value, gs.value.scale);
+  const r = chartRange(taskList.value.filter((t) => !t.repeat && !t.countdownOnly && !t.subscriptionOnly && !t.habitOnly), now.value, gs.value.scale);
   const lo = addDays(now.value, -3 * 366);
   const hi = addDays(now.value, 5 * 366);
   return { start: r.start < lo ? lo : r.start, end: r.end > hi ? hi : r.end };

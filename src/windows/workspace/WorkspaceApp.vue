@@ -10,6 +10,7 @@ import { useViewport } from '@/composables/useViewport';
 import { now, startClock } from '@/composables/now';
 import { startOfMonth } from '@/lib/date';
 import { customCountdownTasks } from '@/lib/countdown';
+import { evaluateHabitDay, isHabitTask } from '@/lib/habits';
 import { isSubscriptionTask, resolveSubscription } from '@/lib/subscriptions';
 import { autoPostpone } from '@/lib/tasks';
 import { doc, history, initStore, redo, storeState, taskList, undo, type ReplayResult } from '@/stores/doc';
@@ -49,6 +50,7 @@ import CalendarStage from './CalendarStage.vue';
 import TasksView from './TasksView.vue';
 import InboxView from './InboxView.vue';
 import CountdownView from './CountdownView.vue';
+import HabitView from './HabitView.vue';
 import SubscriptionView from './SubscriptionView.vue';
 import AreaView from './AreaView.vue';
 import TaskInspector from './TaskInspector.vue';
@@ -85,6 +87,7 @@ const wsTheme = ref<'light' | 'dark'>(
 
 const { isPhone, isTablet, isCompactNav, isDesktop } = useViewport();
 const mobileDrawerOpen = ref(false);
+const mobileDockCompact = ref(false);
 
 function applyWorkspaceTheme(theme: 'light' | 'dark') {
   setWindowThemeOverride(theme);
@@ -264,6 +267,7 @@ watch([sidebarOpen, sidebarWidth], ([open, w]) => {
   sidebarSpring.animateTo(open, w);
 });
 watch(calView, (v) => {
+  mobileDockCompact.value = false;
   try {
     localStorage.setItem(CAL_VIEW_KEY, v);
   } catch {
@@ -286,6 +290,7 @@ const TITLE_MAP: Record<Exclude<WorkspacePageKind, 'area'>, string> = {
   calendar: '日历视图',
   inbox: '收集箱',
   tasks: '待办清单',
+  habits: '每日习惯',
   countdowns: '倒数日',
   subscriptions: '订阅日历',
   gantt: '项目甘特',
@@ -294,6 +299,7 @@ const TITLE_MAP: Record<Exclude<WorkspacePageKind, 'area'>, string> = {
 
 function navigateTo(kind: WorkspacePageKind, groupId?: string, subTab?: AreaSubTab, record = true) {
   cancelTaskPreview();
+  mobileDockCompact.value = false;
   if (kind === 'settings') {
     activeTabId.value = 'tab:settings';
     if (record) pushNavSnap({ kind: 'settings' });
@@ -412,7 +418,7 @@ const inboxCount = computed(() => {
   const todayIso = now.value;
   let n = 0;
   for (const t of taskList.value) {
-    if (t.countdownOnly || t.subscriptionOnly) continue;
+    if (t.countdownOnly || t.subscriptionOnly || t.habitOnly) continue;
     const b = classifyTaskBucket(t, todayIso);
     if (b === 'anytime' || b === 'overdue') n++;
   }
@@ -423,13 +429,24 @@ const openCount = computed(() => {
   const todayIso = now.value;
   let n = 0;
   for (const t of taskList.value) {
-    if (t.countdownOnly || t.subscriptionOnly) continue;
+    if (t.countdownOnly || t.subscriptionOnly || t.habitOnly) continue;
     if (classifyTaskBucket(t, todayIso) !== 'completed') n++;
   }
   return n;
 });
 
 const countdownCount = computed(() => customCountdownTasks(taskList.value).length);
+
+const habitPendingCount = computed(() => {
+  const todayIso = now.value;
+  let n = 0;
+  for (const t of taskList.value) {
+    if (!isHabitTask(t) || t.habit.archived) continue;
+    const st = evaluateHabitDay(t.habit, t.start, todayIso, todayIso);
+    if (st.state !== 'done' && st.state !== 'skip') n++;
+  }
+  return n;
+});
 
 const subscriptionDueCount = computed(() => {
   const todayIso = now.value;
@@ -775,6 +792,7 @@ onBeforeUnmount(() => {
           :inbox-count="inboxCount"
           :open-count="openCount"
           :countdown-count="countdownCount"
+          :habit-pending-count="habitPendingCount"
           :subscription-due-count="subscriptionDueCount"
           :ws-theme="wsTheme"
           @toggle="toggleNavSurface"
@@ -887,13 +905,18 @@ onBeforeUnmount(() => {
                 @open-group="(gid) => navigateTo('area', gid)"
                 @open-countdowns="openCountdownsPage"
                 @open-subscriptions="navigateTo('subscriptions')"
+                @open-habits="navigateTo('habits')"
                 @toggle-inbox-rail="toggleInboxRail"
+                @dock-compact="(v) => (mobileDockCompact = v)"
               />
               <CalendarStage
                 v-else-if="activeKind === 'calendar'"
                 key="view:calendar"
                 :cal-view="calView"
+                :dock-compact="mobileDockCompact"
                 @update:cal-view="updateCalView"
+                @open-task="openTaskInInspector"
+                @dock-compact="(v) => (mobileDockCompact = v)"
               />
               <TasksView
                 v-else-if="activeKind === 'tasks'"
@@ -913,6 +936,10 @@ onBeforeUnmount(() => {
               <CountdownView
                 v-else-if="activeKind === 'countdowns'"
                 key="view:countdowns"
+              />
+              <HabitView
+                v-else-if="activeKind === 'habits'"
+                key="view:habits"
               />
               <SubscriptionView
                 v-else-if="activeKind === 'subscriptions'"
@@ -957,10 +984,12 @@ onBeforeUnmount(() => {
         :active-kind="activeKind"
         :inbox-count="inboxCount"
         :open-count="openCount"
+        :compact="mobileDockCompact"
         @navigate="navigateTo"
         @quick-capture="openQuickCapture"
         @open-drawer="openDrawer"
         @open-task="openTaskInInspector"
+        @expand="mobileDockCompact = false"
       />
 
       <!-- Bottom-left floating Toast with Undo -->
@@ -989,6 +1018,7 @@ onBeforeUnmount(() => {
       :inbox-count="inboxCount"
       :open-count="openCount"
       :countdown-count="countdownCount"
+      :habit-pending-count="habitPendingCount"
       :subscription-due-count="subscriptionDueCount"
       :ws-theme="wsTheme"
       @close="closeDrawer"

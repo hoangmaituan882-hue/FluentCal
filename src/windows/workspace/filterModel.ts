@@ -105,7 +105,7 @@ export function matchesFilterTokens(
   depGraph: DependencyGraph,
   _todayIso?: ISODate,
 ): boolean {
-  if (t.countdownOnly || t.subscriptionOnly) return false;
+  if (t.countdownOnly || t.subscriptionOnly || t.habitOnly) return false;
   const q = query.trim().toLowerCase();
   if (q && !matchesSearchText(t, q)) return false;
   for (const tok of tokens) {

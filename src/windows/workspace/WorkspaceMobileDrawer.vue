@@ -27,6 +27,7 @@ const props = defineProps<{
   inboxCount: number;
   openCount: number;
   countdownCount: number;
+  habitPendingCount?: number;
   subscriptionDueCount?: number;
   wsTheme: 'light' | 'dark';
 }>();
@@ -63,19 +64,72 @@ watch(
   { immediate: true },
 );
 
-const navItems = computed(() => [
+const primaryNavItems = computed(() => [
   { kind: 'daily' as const, label: '今日聚焦', icon: 'today', count: 0 },
   { kind: 'calendar' as const, label: '日历视图', icon: 'calendar', count: 0 },
   { kind: 'inbox' as const, label: '收集箱', icon: 'flag', count: props.inboxCount },
   { kind: 'tasks' as const, label: '全部待办', icon: 'checklist', count: props.openCount },
+]);
+
+const secondaryNavItems = computed(() => [
+  { kind: 'habits' as const, label: '每日习惯', icon: 'flame', count: props.habitPendingCount ?? 0 },
   { kind: 'subscriptions' as const, label: '订阅日历', icon: 'subscription', count: props.subscriptionDueCount ?? 0 },
   { kind: 'countdowns' as const, label: '倒数日', icon: 'timer', count: props.countdownCount },
   { kind: 'gantt' as const, label: '项目甘特', icon: 'gantt', count: 0 },
 ]);
 
+// 1:1 Left-Swipe to Dismiss Drawer Gesture on Android Touch
+const drawerDragX = ref(0);
+const drawerDragging = ref(false);
+let drStartX = 0;
+let drStartY = 0;
+let drAxis: 'none' | 'h' | 'v' = 'none';
+
+function onDrawerTouchStart(e: TouchEvent) {
+  if (e.touches.length !== 1) return;
+  drStartX = e.touches[0].clientX;
+  drStartY = e.touches[0].clientY;
+  drAxis = 'none';
+  drawerDragging.value = false;
+}
+
+function onDrawerTouchMove(e: TouchEvent) {
+  if (e.touches.length !== 1) return;
+  const dx = e.touches[0].clientX - drStartX;
+  const dy = e.touches[0].clientY - drStartY;
+  if (drAxis === 'none') {
+    if (dx < -10 && Math.abs(dx) > Math.abs(dy) * 1.3) {
+      drAxis = 'h';
+      drawerDragging.value = true;
+    } else if (Math.abs(dy) > 10) {
+      drAxis = 'v';
+      return;
+    } else {
+      return;
+    }
+  }
+  if (drAxis === 'h') {
+    e.preventDefault();
+    drawerDragX.value = Math.min(0, dx);
+  }
+}
+
+function onDrawerTouchEnd() {
+  if (drAxis === 'h' && drawerDragX.value < -76) {
+    drawerDragX.value = 0;
+    drawerDragging.value = false;
+    drAxis = 'none';
+    emit('close');
+    return;
+  }
+  drawerDragX.value = 0;
+  drawerDragging.value = false;
+  drAxis = 'none';
+}
+
 const starredTasks = computed(() =>
   taskList.value
-    .filter((t) => !t.countdownOnly && !t.subscriptionOnly && !!t.starred)
+    .filter((t) => !t.countdownOnly && !t.subscriptionOnly && !t.habitOnly && !!t.starred)
     .sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0)),
 );
 
@@ -83,7 +137,7 @@ const groupOpenCounts = computed(() => {
   const map = new Map<string, number>();
   const todayIso = now.value;
   for (const t of taskList.value) {
-    if (t.countdownOnly || t.subscriptionOnly || !t.groupId) continue;
+    if (t.countdownOnly || t.subscriptionOnly || t.habitOnly || !t.groupId) continue;
     if (classifyTaskBucket(t, todayIso) === 'completed') continue;
     map.set(t.groupId, (map.get(t.groupId) ?? 0) + 1);
   }
@@ -264,7 +318,15 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKey, true));
 <template>
   <Transition name="wmd-drawer">
     <div v-if="open" class="wmd-overlay" role="dialog" aria-modal="true" aria-label="导航抽屉" @click.self="emit('close')">
-      <aside class="wmd-sheet">
+      <aside
+        class="wmd-sheet"
+        :class="{ dragging: drawerDragging }"
+        :style="drawerDragX < 0 ? { transform: `translate3d(${drawerDragX.toFixed(1)}px, 0, 0)` } : undefined"
+        @touchstart="onDrawerTouchStart"
+        @touchmove="onDrawerTouchMove"
+        @touchend="onDrawerTouchEnd"
+        @touchcancel="onDrawerTouchEnd"
+      >
         <header class="wmd-head">
           <div class="wmd-brand">
             <GroupSquircle name="FC" color-key="gray" :size="24" />
@@ -287,7 +349,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKey, true));
           <section class="wmd-sec">
             <div class="wmd-nav-grid" role="navigation" aria-label="主要视图">
               <button
-                v-for="item in navItems"
+                v-for="item in primaryNavItems"
                 :key="item.kind"
                 type="button"
                 class="wmd-nav-tile"
@@ -296,6 +358,22 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKey, true));
               >
                 <span class="wnt-top">
                   <FIcon :name="item.icon" :size="15" />
+                  <span v-if="item.count > 0" class="wnt-cnt">{{ item.count }}</span>
+                </span>
+                <span class="wnt-lbl">{{ item.label }}</span>
+              </button>
+            </div>
+            <div class="wmd-nav-subgrid" role="navigation" aria-label="扩展模块">
+              <button
+                v-for="item in secondaryNavItems"
+                :key="item.kind"
+                type="button"
+                class="wmd-nav-tile compact"
+                :class="{ active: activeKind === item.kind }"
+                @click="chooseNav(item.kind)"
+              >
+                <span class="wnt-top">
+                  <FIcon :name="item.icon" :size="14" />
                   <span v-if="item.count > 0" class="wnt-cnt">{{ item.count }}</span>
                 </span>
                 <span class="wnt-lbl">{{ item.label }}</span>
@@ -335,7 +413,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKey, true));
                   <FIcon name="close" :size="11" />
                 </button>
               </div>
-              <div v-if="!starredTasks.length" class="wmd-empty">在任务详情或右键中点击星标即可置顶</div>
+              <div v-if="!starredTasks.length" class="wmd-empty">暂无星标置顶</div>
             </div>
           </section>
 
@@ -597,10 +675,30 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKey, true));
   padding-right: 2px;
 }
 
+.wmd-sheet.dragging {
+  transition: none !important;
+}
+
 .wmd-nav-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 7px;
+}
+
+.wmd-nav-subgrid {
+  margin-top: 7px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.wmd-nav-tile.compact {
+  padding: 9px 9px;
+  gap: 5px;
+}
+
+.wmd-nav-tile.compact .wnt-lbl {
+  font-size: 12px;
 }
 
 .wmd-nav-tile {

@@ -2,7 +2,8 @@
 import { computed, ref, watch } from 'vue';
 import { FIcon, showMenu, taskColor, type MenuItem } from '@/fluent';
 import { isDark } from '@/composables/theme';
-import { isoWeek, parts } from '@/lib/date';
+import { now } from '@/composables/now';
+import { isoWeek, parts, weekday, WEEKDAY_SHORT } from '@/lib/date';
 import { dayInfo } from '@/lib/lunar';
 import { getGroupIcon } from '@/lib/groupIcons';
 import { saveGroup } from '@/lib/tasks';
@@ -61,6 +62,7 @@ const KIND_LABELS: Record<WorkspacePageKind, string> = {
   calendar: '日历视图',
   inbox: '收集箱',
   tasks: '待办清单',
+  habits: '每日习惯',
   subscriptions: '订阅日历',
   countdowns: '倒数日',
   gantt: '项目甘特',
@@ -97,8 +99,13 @@ const heroMonthTitle = computed(() => {
 
 const weekBadgeText = computed(() => `w${isoWeek(ui.selected)}`);
 const lunarSubText = computed(() => `农历${dayInfo(ui.selected).lunarLabel}`);
+const nonCalSubText = computed(() => {
+  const [, m, d] = parts(now.value);
+  return `${m}月${d}日 周${WEEKDAY_SHORT[weekday(now.value)]}`;
+});
 
 const calTitle = computed(() => viewTitle());
+const showRibbonTitle = computed(() => props.calView === 'weeks');
 
 function groupDotHex(colorKey: string): string {
   return taskColor(colorKey, isDark.value).bar;
@@ -133,6 +140,7 @@ function onViewSwitchClick(e: MouseEvent) {
     { label: '时间轴与多日视图', icon: 'calendar', radio: true, checked: props.activeKind === 'calendar', action: () => emit('openTab', 'calendar') },
     { label: '收集箱', icon: 'flag', radio: true, checked: props.activeKind === 'inbox', action: () => emit('openTab', 'inbox') },
     { label: '全部待办', icon: 'checklist', radio: true, checked: props.activeKind === 'tasks', action: () => emit('openTab', 'tasks') },
+    { label: '每日习惯', icon: 'flame', radio: true, checked: props.activeKind === 'habits', action: () => emit('openTab', 'habits') },
     { label: '订阅日历', icon: 'subscription', radio: true, checked: props.activeKind === 'subscriptions', action: () => emit('openTab', 'subscriptions') },
     { label: '倒数日', icon: 'timer', radio: true, checked: props.activeKind === 'countdowns', action: () => emit('openTab', 'countdowns') },
     { label: '项目甘特', icon: 'gantt', radio: true, checked: props.activeKind === 'gantt', action: () => emit('openTab', 'gantt') },
@@ -230,7 +238,7 @@ function onMoreClick(e: MouseEvent) {
             <span class="wmh-week-tag">{{ weekBadgeText }}</span>
             <span class="wmh-sub-sep" aria-hidden="true">·</span>
             <span class="wmh-sub-context">
-              {{ isCalicoHeroMode ? lunarSubText : KIND_LABELS[activeKind] }}
+              {{ isCalicoHeroMode ? lunarSubText : nonCalSubText }}
             </span>
           </button>
         </div>
@@ -284,7 +292,7 @@ function onMoreClick(e: MouseEvent) {
     <!-- Contextual Sub-Ribbon: Calendar navigation & sub-view switch -->
     <div v-if="activeKind === 'calendar'" class="wmh-ribbon wmh-cal-ribbon">
       <div class="wmh-cal-nav">
-        <span class="wmh-cal-title">{{ calTitle }}</span>
+        <span v-if="showRibbonTitle" class="wmh-cal-title">{{ calTitle }}</span>
         <div class="wmh-cal-steps">
           <button type="button" class="wmh-step-btn" title="上一页" aria-label="上一页" @click="page(-1)">
             <FIcon name="chevronLeft" :size="12" />
