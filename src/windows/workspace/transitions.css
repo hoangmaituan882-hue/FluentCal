@@ -1,0 +1,473 @@
+/* ==========================================================================
+   transitions.dev Motion Tokens & Portable Primitives for FluentCal Workspace
+   Zero-dependency CSS transitions with prefers-reduced-motion guards.
+   ========================================================================== */
+
+:root {
+  /* ── Motion tokens — shared scale (transitions.dev) ────────────────── */
+  --duration-stagger: 40ms;
+  --duration-micro: 80ms;
+  --duration-quick: 150ms;
+  --duration-fast: 250ms;
+  --duration-medium: 350ms;
+  --duration-slow: 400ms;
+  --duration-very-slow: 500ms;
+
+  --ease-smooth-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: ease-in-out;
+  --ease-out: ease-out;
+  --ease-linear: linear;
+  --ease-bounce: cubic-bezier(0.34, 1.36, 0.64, 1);
+  --ease-bounce-strong: cubic-bezier(0.34, 3.85, 0.64, 1);
+
+  --distance-micro: 4px;
+  --distance-small: 6px;
+  --distance-base: 8px;
+  --distance-medium: 12px;
+  --distance-large: 30px;
+
+  --scale-large: 0.96;
+  --scale-medium: 0.97;
+  --scale-small: 0.98;
+  --scale-tiny: 0.99;
+
+  --blur-small: 2px;
+  --blur-medium: 3px;
+  --blur-large: 8px;
+
+  /* ── Per-transition semantic tokens ────────────────────────────────── */
+  --resize-dur: 300ms;
+  --resize-ease: var(--ease-smooth-out);
+
+  --digit-dur: 500ms;
+  --digit-distance: 8px;
+  --digit-stagger: 70ms;
+  --digit-blur: 2px;
+  --digit-ease: cubic-bezier(0.34, 1.45, 0.64, 1);
+  --digit-dir-x: 0;
+  --digit-dir-y: 1;
+
+  --text-swap-dur: 150ms;
+  --text-swap-translate-y: 4px;
+  --text-swap-blur: 2px;
+  --text-swap-ease: ease-in-out;
+
+  --dropdown-open-dur: 250ms;
+  --dropdown-close-dur: 150ms;
+  --dropdown-pre-scale: 0.97;
+  --dropdown-closing-scale: 0.99;
+  --dropdown-ease: var(--ease-smooth-out);
+
+  --modal-open-dur: 250ms;
+  --modal-close-dur: 150ms;
+  --modal-scale: 0.96;
+  --modal-scale-close: 0.96;
+  --modal-ease: var(--ease-smooth-out);
+
+  --page-slide-dur: 250ms;
+  --page-fade-dur: 250ms;
+  --page-slide-distance: 10px;
+  --page-blur: 3px;
+  --page-slide-ease: var(--ease-smooth-out);
+
+  --icon-swap-dur: 250ms;
+  --icon-swap-blur: 2px;
+  --icon-swap-ease: ease-in-out;
+
+  --shake-distance: 6px;
+  --shake-overshoot: 4px;
+  --shake-dur-a: 80ms;
+  --shake-dur-b: 60ms;
+  --shake-ease: var(--ease-smooth-out);
+  --revert-dur: 280ms;
+
+  --acc-expand: 250ms;
+  --acc-collapse: 250ms;
+  --acc-chevron: 250ms;
+  --acc-ease: var(--ease-smooth-out);
+
+  --toast-open: 350ms;
+  --toast-close: 250ms;
+  --toast-distance: 16px;
+  --toast-blur: 2px;
+  --toast-scale: 0.97;
+  --toast-ease: var(--ease-smooth-out);
+
+  --check-box: 150ms;
+  --check-draw: 320ms;
+  --check-delay: 70ms;
+  --check-uncheck: 150ms;
+  --check-ease: var(--ease-smooth-out);
+
+  --toggle-dur: 350ms;
+  --toggle-travel: 16px;
+  --toggle-ov1: 1.5px;
+  --toggle-ov2: 0.5px;
+  --toggle-track: 160ms;
+  --toggle-ease: cubic-bezier(0.34, 1.35, 0.64, 1);
+
+  --stagger-dur: 320ms;
+  --stagger-distance: 8px;
+  --stagger-stagger: 36ms;
+  --stagger-blur: 2px;
+  --stagger-ease: var(--ease-smooth-out);
+}
+
+/* ── 02. Number pop-in ──────────────────────────────────────────────── */
+@keyframes t-digit-pop-in {
+  0% {
+    transform: translate(
+      calc(var(--digit-distance) * var(--digit-dir-x)),
+      calc(var(--digit-distance) * var(--digit-dir-y))
+    );
+    opacity: 0;
+    filter: blur(var(--digit-blur));
+  }
+  100% {
+    transform: translate(0, 0);
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+
+.t-digit-group {
+  display: inline-flex;
+  align-items: baseline;
+  font-variant-numeric: tabular-nums;
+}
+
+.t-digit {
+  display: inline-block;
+  will-change: transform, opacity, filter;
+}
+
+.t-digit-group.is-animating .t-digit {
+  animation: t-digit-pop-in var(--digit-dur) var(--digit-ease) both;
+}
+
+.t-digit-group.is-animating .t-digit[data-stagger='1'] {
+  animation-delay: var(--digit-stagger);
+}
+
+.t-digit-group.is-animating .t-digit[data-stagger='2'] {
+  animation-delay: calc(var(--digit-stagger) * 2);
+}
+
+.t-digit-group.is-animating .t-digit[data-same] {
+  animation: none;
+}
+
+/* ── 04. Text states swap (Vue Transition) ──────────────────────────── */
+.t-text-swap-enter-active,
+.t-text-swap-leave-active {
+  transition:
+    opacity var(--text-swap-dur) var(--text-swap-ease),
+    transform var(--text-swap-dur) var(--text-swap-ease),
+    filter var(--text-swap-dur) var(--text-swap-ease);
+}
+
+.t-text-swap-enter-from {
+  opacity: 0;
+  transform: translateY(var(--text-swap-translate-y));
+  filter: blur(var(--text-swap-blur));
+}
+
+.t-text-swap-leave-to {
+  opacity: 0;
+  transform: translateY(calc(var(--text-swap-translate-y) * -1));
+  filter: blur(var(--text-swap-blur));
+}
+
+/* ── 08. Directional Day / Page Side-by-Side Slide ──────────────────── */
+.t-day-next-enter-active,
+.t-day-next-leave-active,
+.t-day-prev-enter-active,
+.t-day-prev-leave-active {
+  transition:
+    opacity var(--page-fade-dur) var(--page-slide-ease),
+    transform var(--page-slide-dur) var(--page-slide-ease),
+    filter var(--page-slide-dur) var(--page-slide-ease);
+  will-change: opacity, transform, filter;
+}
+
+.t-day-next-leave-active,
+.t-day-prev-leave-active {
+  transition-duration: 165ms;
+}
+
+.t-day-next-enter-from {
+  opacity: 0;
+  transform: translateX(var(--page-slide-distance));
+  filter: blur(var(--page-blur));
+}
+
+.t-day-next-leave-to {
+  opacity: 0;
+  transform: translateX(calc(var(--page-slide-distance) * -1));
+  filter: blur(var(--blur-small));
+}
+
+.t-day-prev-enter-from {
+  opacity: 0;
+  transform: translateX(calc(var(--page-slide-distance) * -1));
+  filter: blur(var(--page-blur));
+}
+
+.t-day-prev-leave-to {
+  opacity: 0;
+  transform: translateX(var(--page-slide-distance));
+  filter: blur(var(--blur-small));
+}
+
+/* ── 12. Error state shake ──────────────────────────────────────────── */
+.t-input {
+  transition: border-color var(--duration-quick) ease-out, box-shadow var(--duration-quick) ease-out;
+  will-change: transform;
+}
+
+.t-input.is-error {
+  border-color: #ef4444 !important;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.14);
+  transition: border-color var(--revert-dur) ease-out, box-shadow var(--revert-dur) ease-out;
+}
+
+.t-input.is-shaking {
+  animation: t-input-shake calc(var(--shake-dur-a) * 2 + var(--shake-dur-b) * 2) linear;
+}
+
+@keyframes t-input-shake {
+  0% {
+    transform: translateX(0);
+    animation-timing-function: var(--shake-ease);
+  }
+  28.57% {
+    transform: translateX(var(--shake-distance));
+    animation-timing-function: var(--shake-ease);
+  }
+  57.14% {
+    transform: translateX(calc(var(--shake-distance) * -1));
+    animation-timing-function: var(--shake-ease);
+  }
+  78.57% {
+    transform: translateX(var(--shake-overshoot));
+    animation-timing-function: var(--shake-ease);
+  }
+  100% {
+    transform: translateX(0);
+  }
+}
+
+/* ── 21. Accordion expand (0fr <-> 1fr + symmetric chevron flip) ─────── */
+.t-acc-panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--acc-collapse) var(--acc-ease);
+}
+
+.t-acc[data-open='true'] .t-acc-panel {
+  grid-template-rows: 1fr;
+  transition: grid-template-rows var(--acc-expand) var(--acc-ease);
+}
+
+.t-acc-panel-inner {
+  overflow: hidden;
+  opacity: 0;
+  filter: blur(var(--blur-small));
+  transition:
+    opacity var(--acc-collapse) var(--acc-ease),
+    filter var(--acc-collapse) var(--acc-ease);
+}
+
+.t-acc[data-open='true'] .t-acc-panel-inner {
+  opacity: 1;
+  filter: blur(0);
+  transition:
+    opacity var(--acc-expand) var(--acc-ease),
+    filter var(--acc-expand) var(--acc-ease);
+}
+
+.t-acc-chevron {
+  display: inline-flex;
+  transform: scaleY(1);
+  transform-origin: center;
+  transition: transform var(--acc-chevron) var(--acc-ease);
+}
+
+.t-acc[data-open='true'] .t-acc-chevron {
+  transform: scaleY(-1);
+}
+
+/* ── 27. Double-bounce Toggle ───────────────────────────────────────── */
+.t-toggle {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  padding: 2px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--ws-pill-bg, rgba(28, 25, 23, 0.14));
+  cursor: pointer;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  transition: background-color var(--toggle-track) var(--ease-smooth-out);
+}
+
+.t-toggle[data-on='true'] {
+  background: var(--ws-ink, #18181a);
+}
+
+.t-toggle-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--ws-card-bg, #ffffff);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  translate: 0 0;
+  will-change: translate;
+}
+
+.t-toggle[data-on='true'] .t-toggle-thumb {
+  translate: var(--toggle-travel) 0;
+}
+
+.t-toggle.is-init[data-on='true'] .t-toggle-thumb {
+  animation: t-toggle-on var(--toggle-dur) var(--toggle-ease) both;
+}
+
+.t-toggle.is-init[data-on='false'] .t-toggle-thumb {
+  animation: t-toggle-off var(--toggle-dur) var(--toggle-ease) both;
+}
+
+@keyframes t-toggle-on {
+  0% {
+    translate: 0 0;
+  }
+  55% {
+    translate: calc(var(--toggle-travel) + var(--toggle-ov1)) 0;
+  }
+  80% {
+    translate: calc(var(--toggle-travel) - var(--toggle-ov2)) 0;
+  }
+  100% {
+    translate: var(--toggle-travel) 0;
+  }
+}
+
+@keyframes t-toggle-off {
+  0% {
+    translate: var(--toggle-travel) 0;
+  }
+  55% {
+    translate: calc(0px - var(--toggle-ov1)) 0;
+  }
+  80% {
+    translate: var(--toggle-ov2) 0;
+  }
+  100% {
+    translate: 0 0;
+  }
+}
+
+/* ── Native FLIP List Reflow (TransitionGroup name="t-list") ────────── */
+.t-list-move {
+  transition: transform 280ms var(--ease-smooth-out);
+}
+
+.t-list-enter-active {
+  transition:
+    opacity 240ms var(--ease-smooth-out),
+    transform 240ms var(--ease-smooth-out),
+    filter 240ms var(--ease-smooth-out);
+}
+
+.t-list-leave-active {
+  transition:
+    opacity 200ms var(--ease-smooth-out),
+    transform 200ms var(--ease-smooth-out),
+    max-height 240ms var(--ease-smooth-out);
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.t-list-enter-from {
+  opacity: 0;
+  transform: translateY(6px);
+  filter: blur(2px);
+}
+
+.t-list-leave-to {
+  opacity: 0;
+  transform: translateX(10px) scale(0.985);
+}
+
+/* ── Task Completion Strikethrough Sweep ────────────────────────────── */
+.t-strike-text {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  transition: color 240ms var(--ease-smooth-out), opacity 240ms var(--ease-smooth-out);
+}
+
+.t-strike-text::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 52%;
+  height: 1.5px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.65;
+  transform: scaleX(0);
+  transform-origin: left center;
+  pointer-events: none;
+  transition: transform 260ms var(--ease-smooth-out) 60ms;
+}
+
+.t-strike-text.is-struck {
+  color: var(--ws-ink-muted);
+}
+
+.t-strike-text.is-struck::after {
+  transform: scaleX(1);
+}
+
+/* ── 450ms Spring-Loaded Sidebar Charge Fill ────────────────────────── */
+@keyframes ws-spring-charge {
+  0% {
+    transform: scaleX(0);
+    opacity: 0.85;
+  }
+  100% {
+    transform: scaleX(1);
+    opacity: 1;
+  }
+}
+
+.ws-drag-active-body {
+  cursor: grabbing !important;
+}
+
+/* ── Reduced motion guard ───────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .t-digit-group .t-digit,
+  .t-input,
+  .t-toggle-thumb,
+  .t-acc-panel,
+  .t-acc-panel-inner,
+  .t-acc-chevron,
+  .t-day-next-enter-active,
+  .t-day-next-leave-active,
+  .t-day-prev-enter-active,
+  .t-day-prev-leave-active,
+  .t-text-swap-enter-active,
+  .t-text-swap-leave-active,
+  .t-list-move,
+  .t-list-enter-active,
+  .t-list-leave-active,
+  .t-strike-text::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

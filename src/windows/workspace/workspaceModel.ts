@@ -4,7 +4,7 @@ import { flexKind, MONTH, monthSlot, slotDone, SOMEDAY_SLOT } from '@/lib/flex';
 import { occurrenceOn, occurrences } from '@/lib/recur';
 import { effectiveStatus } from '@/lib/taskMeta';
 
-export type WorkspacePageKind = 'daily' | 'calendar' | 'inbox' | 'tasks' | 'gantt' | 'countdowns' | 'area' | 'settings';
+export type WorkspacePageKind = 'daily' | 'calendar' | 'inbox' | 'tasks' | 'subscriptions' | 'gantt' | 'countdowns' | 'area' | 'settings';
 
 export interface WorkspaceTab {
   id: string;
@@ -106,7 +106,7 @@ export function closeTabsToRight(
   return { tabs: remaining, activeId: nextActive };
 }
 
-const VALID_KINDS: WorkspacePageKind[] = ['daily', 'calendar', 'inbox', 'tasks', 'gantt', 'countdowns', 'area', 'settings'];
+const VALID_KINDS: WorkspacePageKind[] = ['daily', 'calendar', 'inbox', 'tasks', 'subscriptions', 'gantt', 'countdowns', 'area', 'settings'];
 
 export function persistTabs(state: { tabs: WorkspaceTab[]; activeId: string }): void {
   try {
@@ -205,7 +205,7 @@ export function filterWorkspaceTasks(
   const q = query.trim().toLowerCase();
   const out: Task[] = [];
   for (const t of tasks) {
-    if (t.countdownOnly) continue;
+    if (t.countdownOnly || t.subscriptionOnly) continue;
     if (!matchesGroup(t, groupId) || !matchesQuery(t, q)) continue;
     const bucket = classifyTaskBucket(t, todayIso);
     if (filter === 'all') {
@@ -239,7 +239,7 @@ export function taskCountsByFilter(
     completed: 0,
   };
   for (const t of tasks) {
-    if (t.countdownOnly) continue;
+    if (t.countdownOnly || t.subscriptionOnly) continue;
     if (!matchesGroup(t, groupId)) continue;
     const bucket = classifyTaskBucket(t, todayIso);
     if (bucket === 'completed') {

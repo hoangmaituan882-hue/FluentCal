@@ -22,6 +22,7 @@ import PriorityGlyph from './PriorityGlyph.vue';
 import StatusGlyph from './StatusGlyph.vue';
 import { classifyTaskBucket } from './workspaceModel';
 import { buildGroupSelectionMenuItems, openTaskContextMenu, STATUS_DOT_COLOR } from './workspaceMenus';
+import { endTaskDrag, startTaskDrag, workspaceDrag } from './workspaceDrag';
 
 const props = defineProps<{
   searchQuery: string;
@@ -44,7 +45,7 @@ const triageItems = computed<Task[]>(() => {
   const todayIso = now.value;
   return taskList.value
     .filter((t) => {
-      if (t.countdownOnly) return false;
+      if (t.countdownOnly || t.subscriptionOnly) return false;
       if (props.filterGroupId === '__ungrouped__' && t.groupId) return false;
       if (props.filterGroupId && props.filterGroupId !== '__ungrouped__' && t.groupId !== props.filterGroupId) return false;
       const b = classifyTaskBucket(t, todayIso);
@@ -263,12 +264,15 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
       </form>
 
       <!-- Triage Cards -->
-      <div v-if="triageItems.length" class="triage-list">
+      <TransitionGroup v-if="triageItems.length" name="t-list" tag="div" class="triage-list">
         <div
           v-for="(t, i) in triageItems"
           :key="t.id"
           class="ws-card triage-card"
-          :class="{ focused: activeIdx === i }"
+          :class="{ focused: activeIdx === i, dragging: workspaceDrag.active && workspaceDrag.taskId === t.id }"
+          draggable="true"
+          @dragstart="startTaskDrag(t, $event, 'inbox-page')"
+          @dragend="endTaskDrag"
           @mouseenter="activeIdx = i"
           @click="emit('openTask', t.id)"
           @contextmenu.prevent="openInboxMenu(t, $event)"
@@ -343,7 +347,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
             </button>
           </div>
         </div>
-      </div>
+      </TransitionGroup>
       <div v-else class="ws-card empty-inbox">
         <div class="ei-title">收集箱已清空</div>
         <div class="ei-sub">没有待整理的不定日事项或逾期任务，随时在上方记录新想法。</div>

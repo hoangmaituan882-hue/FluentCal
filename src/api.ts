@@ -12,15 +12,15 @@ export const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in
 
 const query = new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
 
+export const isAndroid = !isTauri && (Capacitor.isNativePlatform() || import.meta.env.MODE === 'android');
+
 export const windowLabel: string = isTauri
   ? getCurrentWebviewWindow().label
   : (query.get('w') ??
-    (Capacitor.isNativePlatform() || import.meta.env.MODE === 'android'
-      ? 'mobile'
-      : import.meta.env.MODE === 'server'
-        ? 'workspace'
-        : 'desk'));
-export const isMobile = !isTauri && windowLabel === 'mobile';
+    (isAndroid || import.meta.env.MODE === 'server'
+      ? 'workspace'
+      : 'desk'));
+export const isMobile = !isTauri && (windowLabel === 'mobile' || (isAndroid && !query.get('w')));
 
 /** Identifies this window in change events (unique per browser tab in mock mode). */
 export const origin: string = isTauri ? windowLabel : `${windowLabel}:${Math.random().toString(36).slice(2, 8)}`;

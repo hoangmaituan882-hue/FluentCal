@@ -239,6 +239,59 @@ export async function call<T>(
       result = name;
       break;
     }
+    case "sync_status": {
+      const m = await import("./sync");
+      result = { ...m.syncStatus };
+      break;
+    }
+    case "sync_now": {
+      const m = await import("./sync");
+      await m.syncNow(true);
+      result = { ...m.syncStatus };
+      break;
+    }
+    case "holidays_fetch": {
+      const year = String(args.year ?? "");
+      const doc = await load();
+      result = (year && doc.holidays?.[year]) || {};
+      break;
+    }
+    case "store_data_dir":
+    case "data_dir_info":
+      result = { path: "应用本地存储", custom: false, missing: null };
+      break;
+    case "screens_list":
+    case "backups_list":
+      result = [];
+      break;
+    case "web_status":
+    case "web_info":
+      result = { running: false, urls: [], token: "" };
+      break;
+    case "file_open": {
+      result = await new Promise<string | null>((resolve) => {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = ".json,application/json";
+        input.onchange = () => {
+          const file = input.files?.[0];
+          if (!file) return resolve(null);
+          void file.text().then(resolve, () => resolve(null));
+        };
+        input.oncancel = () => resolve(null);
+        input.click();
+      });
+      break;
+    }
+    case "pending_take":
+    case "window_show":
+    case "desk_hide":
+    case "desk_move_to_screen":
+    case "open_data_dir":
+    case "pick_folder":
+    case "notify_test":
+      result = null;
+      break;
     default:
       throw new Error(`Android 不支持操作：${command}`);
   }

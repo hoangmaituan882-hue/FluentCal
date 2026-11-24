@@ -29,6 +29,35 @@ export interface RepeatRule {
 export type TaskStatus = 'backlog' | 'todo' | 'in_progress' | 'in_review' | 'done';
 export type TaskPriority = 'none' | 'low' | 'medium' | 'high' | 'urgent';
 
+export type SubscriptionCycle = 'weekly' | 'monthly' | 'quarterly' | 'semiannual' | 'yearly';
+export type SubscriptionCurrency = 'CNY' | 'USD' | 'HKD' | 'EUR' | 'JPY' | 'GBP';
+export type SubscriptionCategory = 'ai' | 'cloud' | 'media' | 'life' | 'work' | 'other';
+export type SubscriptionStatus = 'active' | 'trial' | 'paused' | 'cancelled';
+
+export interface SubscriptionMeta {
+  /** Original price per billing cycle (before split-bill division). */
+  price: number;
+  currency: SubscriptionCurrency;
+  cycle: SubscriptionCycle;
+  category: SubscriptionCategory;
+  status: SubscriptionStatus;
+  autoRenew: boolean;
+  /** Split bill across N people (default 1 = personal; e.g. 6 = family split, pays 1/6). */
+  splitCount?: number;
+  /** Payment channel note (e.g. 'Apple 订阅', '微信自动扣款', 'Visa 4242'). */
+  paymentMethod?: string;
+  /** Compact emblem glyph/monogram displayed on calendar & membership cards. */
+  emblem?: string;
+  /** Custom hex or preset brand color for gradient cards & badges. */
+  brandColor?: string;
+  /** Optional giant background watermark text for editorial cards. */
+  watermark?: string;
+  /** Days before next charge to highlight/remind (default 2). */
+  remindDaysBefore?: number;
+  /** Optional: also expose renewal events on the main calendar grid. */
+  showOnCalendar?: boolean;
+}
+
 export interface TaskCheckItem {
   id: string;
   text: string;
@@ -95,6 +124,10 @@ export interface Task {
   countdownMode?: CountdownMode;
   /** Pin this countdown to the front of CountdownBar and Workspace spotlight. */
   countdownPinned?: boolean;
+  /** Standalone subscription membership record (shown in Subscription Calendar, hidden from todo/inbox/gantt). */
+  subscriptionOnly?: boolean;
+  /** Structured billing/cycle/currency metadata for subscription records. */
+  subscription?: SubscriptionMeta;
   /** Overrides settings.tasks.autoPostpone for this task. */
   autoPostpone?: boolean;
   /** First-run sample data ("清除示例数据" removes it); dropped once the user renames it. */

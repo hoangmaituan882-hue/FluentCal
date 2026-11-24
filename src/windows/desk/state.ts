@@ -98,7 +98,9 @@ export function clusterSpotlightStateOf(tasks: readonly Task[]): SpotlightVisual
  * Gantt chart take all of them. */
 export const shownTasks = computed(() => {
   const f = groupFilter.value;
-  const visible = taskList.value.filter((t) => !t.countdownOnly);
+  const visible = taskList.value.filter(
+    (t) => !t.countdownOnly && (!t.subscriptionOnly || !!t.subscription?.showOnCalendar),
+  );
   return f.length ? visible.filter((t) => t.id === ui.revealTask || shown(doc.groups, f, t)) : visible;
 });
 

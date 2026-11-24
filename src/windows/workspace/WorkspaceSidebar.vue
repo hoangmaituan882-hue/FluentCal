@@ -11,10 +11,24 @@ import { deleteGroup, makeGroup, saveGroup, saveTask } from '@/lib/tasks';
 import { groupList, put, taskList } from '@/stores/doc';
 import { notify } from '../desk/state';
 import GroupSquircle from './GroupSquircle.vue';
+import NumberPop from './NumberPop.vue';
 import StatusGlyph from './StatusGlyph.vue';
 import { cancelTaskPreview, hideTaskPreview, showTaskPreview } from './useTaskHoverPreview';
 import { classifyTaskBucket, type WorkspacePageKind } from './workspaceModel';
 import { buildGroupCustomizeChildren, openTaskContextMenu } from './workspaceMenus';
+import {
+  armSpringNav,
+  cancelSpringNav,
+  dropTaskToDate,
+  dropTaskToGroup,
+  dropTaskToInbox,
+  dropTaskToStarred,
+  endTaskDrag,
+  getDraggedTaskId,
+  hasTaskDragPayload,
+  SPRING_NAV_DELAY_MS,
+  workspaceDrag,
+} from './workspaceDrag';
 
 watchSync();
 
@@ -28,6 +42,7 @@ const props = defineProps<{
   inboxCount: number;
   openCount: number;
   countdownCount: number;
+  subscriptionDueCount?: number;
   wsTheme: 'light' | 'dark';
 }>();
 
@@ -70,13 +85,14 @@ const navItems = computed(() => [
   { kind: 'calendar' as const, label: '日历视图', icon: 'calendar', count: 0 },
   { kind: 'inbox' as const, label: '收集箱', icon: 'flag', count: props.inboxCount },
   { kind: 'tasks' as const, label: '全部待办', icon: 'checklist', count: props.openCount },
+  { kind: 'subscriptions' as const, label: '订阅日历', icon: 'subscription', count: props.subscriptionDueCount ?? 0 },
   { kind: 'countdowns' as const, label: '倒数日', icon: 'timer', count: props.countdownCount },
   { kind: 'gantt' as const, label: '项目甘特', icon: 'gantt', count: 0 },
 ]);
 
 const starredTasks = computed(() =>
   taskList.value
-    .filter((t) => !t.countdownOnly && !!t.starred)
+    .filter((t) => !t.countdownOnly && !t.subscriptionOnly && !!t.starred)
     .sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0)),
 );
 
@@ -84,7 +100,7 @@ const groupOpenCounts = computed(() => {
   const map = new Map<string, number>();
   const todayIso = now.value;
   for (const t of taskList.value) {
-    if (t.countdownOnly || !t.groupId) continue;
+    if (t.countdownOnly || t.subscriptionOnly || !t.groupId) continue;
     if (classifyTaskBucket(t, todayIso) === 'completed') continue;
     map.set(t.groupId, (map.get(t.groupId) ?? 0) + 1);
   }
@@ -372,6 +388,88 @@ watch(
     }
   },
 );
+
+// Cross-View Drag & 450ms Spring-Loaded Navigation on Sidebar Pills & Groups
+const dropNavKind = ref<string>('');
+const dropStarred = ref(false);
+const dropGroupId = ref<string>('');
+
+function onNavDragOver(kind: WorkspacePageKind, e: DragEvent) {
+  if (!hasTaskDragPayload(e)) return;
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+  dropNavKind.value = kind;
+  if (props.activeKind !== kind) {
+    armSpringNav(`nav:${kind}`, () => {
+      emit('navigate', kind);
+    });
+  }
+}
+
+function onNavDragLeave(kind: WorkspacePageKind) {
+  if (dropNavKind.value === kind) dropNavKind.value = '';
+  cancelSpringNav(`nav:${kind}`);
+}
+
+function onNavDrop(kind: WorkspacePageKind, e: DragEvent) {
+  dropNavKind.value = '';
+  cancelSpringNav(`nav:${kind}`);
+  const taskId = getDraggedTaskId(e);
+  if (!taskId) return;
+  e.preventDefault();
+  if (kind === 'daily') {
+    void dropTaskToDate(taskId, now.value);
+  } else if (kind === 'inbox') {
+    void dropTaskToInbox(taskId);
+  } else if (kind === 'calendar') {
+    void dropTaskToDate(taskId, now.value);
+    emit('navigate', 'calendar');
+  } else {
+    emit('navigate', kind);
+    endTaskDrag();
+  }
+}
+
+function onStarSecDragOver(e: DragEvent) {
+  if (!hasTaskDragPayload(e)) return;
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+  dropStarred.value = true;
+}
+
+function onStarSecDrop(e: DragEvent) {
+  dropStarred.value = false;
+  const taskId = getDraggedTaskId(e);
+  if (!taskId) return;
+  e.preventDefault();
+  void dropTaskToStarred(taskId);
+}
+
+function onGroupDragOver(groupId: string, e: DragEvent) {
+  if (!hasTaskDragPayload(e)) return;
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+  dropGroupId.value = groupId;
+  if (!(props.activeKind === 'area' && props.activeGroupId === groupId)) {
+    armSpringNav(`grp:${groupId}`, () => {
+      emit('navigate', 'area', groupId);
+    });
+  }
+}
+
+function onGroupDragLeave(groupId: string) {
+  if (dropGroupId.value === groupId) dropGroupId.value = '';
+  cancelSpringNav(`grp:${groupId}`);
+}
+
+function onGroupDrop(groupId: string, e: DragEvent) {
+  dropGroupId.value = '';
+  cancelSpringNav(`grp:${groupId}`);
+  const taskId = getDraggedTaskId(e);
+  if (!taskId) return;
+  e.preventDefault();
+  void dropTaskToGroup(taskId, groupId);
+}
 </script>
 
 <template>
@@ -404,17 +502,31 @@ watch(
             :key="item.kind"
             type="button"
             class="stone-pill"
-            :class="{ active: activeKind === item.kind }"
+            :class="{
+              active: activeKind === item.kind,
+              'drop-over': dropNavKind === item.kind,
+              'spring-charging': workspaceDrag.springKey === `nav:${item.kind}`,
+            }"
+            :style="{ '--spring-ms': `${SPRING_NAV_DELAY_MS}ms` }"
             @click="emit('navigate', item.kind)"
+            @dragover="onNavDragOver(item.kind, $event)"
+            @dragleave="onNavDragLeave(item.kind)"
+            @drop="onNavDrop(item.kind, $event)"
           >
-            <FIcon class="sp-ico" :name="item.icon" :size="13" />
+            <FIcon class="sp-ico" :name="item.icon" :size="15" :active="activeKind === item.kind" />
             <span class="sp-lbl">{{ item.label }}</span>
-            <span v-if="item.count > 0" class="sp-cnt">{{ item.count }}</span>
+            <span v-if="item.count > 0" class="sp-cnt"><NumberPop :value="item.count" /></span>
           </button>
         </nav>
 
         <!-- Starred Pinned Tasks (with Hover Preview Card) -->
-        <section class="sb-section">
+        <section
+          class="sb-section"
+          :class="{ 'drop-star-sec': dropStarred }"
+          @dragover="onStarSecDragOver"
+          @dragleave="dropStarred = false"
+          @drop="onStarSecDrop"
+        >
           <div class="sb-sec-head">
             <button
               type="button"
@@ -512,9 +624,17 @@ watch(
                   <button
                     type="button"
                     class="sb-group-btn"
-                    :class="{ active: activeKind === 'area' && activeGroupId === g.id }"
+                    :class="{
+                      active: activeKind === 'area' && activeGroupId === g.id,
+                      'drop-over': dropGroupId === g.id,
+                      'spring-charging': workspaceDrag.springKey === `grp:${g.id}`,
+                    }"
+                    :style="{ '--spring-ms': `${SPRING_NAV_DELAY_MS}ms` }"
                     @click="toggleGroupTree(g)"
                     @contextmenu.prevent="openGroupMenu(g, $event)"
+                    @dragover="onGroupDragOver(g.id, $event)"
+                    @dragleave="onGroupDragLeave(g.id)"
+                    @drop="onGroupDrop(g.id, $event)"
                   >
                     <GroupSquircle
                       :name="g.name"
@@ -777,6 +897,8 @@ watch(
 }
 
 .stone-pill {
+  position: relative;
+  overflow: hidden;
   height: 27px;
   max-width: 100%;
   padding: 0 10px 0 8px;
@@ -795,7 +917,44 @@ watch(
     background-color 130ms ease,
     color 130ms ease,
     box-shadow 140ms ease,
-    transform 110ms var(--ws-ease-out);
+    transform 140ms var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1));
+}
+
+.stone-pill > * {
+  position: relative;
+  z-index: 1;
+}
+
+.stone-pill.drop-over,
+.sb-group-btn.drop-over {
+  background: color-mix(in srgb, #e85d2a 13%, var(--ws-card-bg));
+  color: var(--ws-ink);
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, #e85d2a 48%, transparent);
+  transform: scale(1.025);
+}
+
+.stone-pill.spring-charging::after,
+.sb-group-btn.spring-charging::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: color-mix(in srgb, #e85d2a 20%, transparent);
+  transform-origin: left center;
+  animation: ws-spring-charge var(--spring-ms, 450ms) linear forwards;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.sb-group-btn {
+  position: relative;
+  overflow: hidden;
+}
+
+.sb-section.drop-star-sec {
+  border-radius: 10px;
+  background: color-mix(in srgb, #f59e0b 11%, transparent);
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, #f59e0b 45%, transparent);
 }
 
 .stone-pill:hover:not(.active) {

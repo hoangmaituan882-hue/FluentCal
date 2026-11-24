@@ -64,7 +64,7 @@ const upNextInfo = computed<UpNextInfo>(() => {
   const todayAny: Task[] = [];
 
   for (const t of taskList.value) {
-    if (t.countdownOnly || flexKind(t)) continue;
+    if (t.countdownOnly || t.subscriptionOnly || flexKind(t)) continue;
     const occs = occurrences(t, todayIso, todayIso);
     for (const o of occs) {
       if (o.done) continue;
@@ -116,7 +116,7 @@ const upNextInfo = computed<UpNextInfo>(() => {
   // Fallback to selected date occurrences if viewing another day
   if (ui.selected !== todayIso) {
     for (const t of taskList.value) {
-      if (t.countdownOnly || flexKind(t)) continue;
+      if (t.countdownOnly || t.subscriptionOnly || flexKind(t)) continue;
       const occs = occurrences(t, ui.selected, ui.selected);
       const openOcc = occs.find((o) => !o.done);
       if (openOcc) {

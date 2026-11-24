@@ -2,7 +2,7 @@
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { FButton, FTextBox } from '@/fluent';
 import type { ISODate } from '@/types';
-import { call, currentWindow, isServer } from '@/api';
+import { call, currentWindow, isMobile, isServer } from '@/api';
 import { checkSession, loginServer, logoutServer, serverState } from '@/serverApi';
 import { startThemeSync, setWindowThemeOverride } from '@/composables/theme';
 import { useSidebarSpring } from '@/composables/useSidebarSpring';
@@ -10,6 +10,7 @@ import { useViewport } from '@/composables/useViewport';
 import { now, startClock } from '@/composables/now';
 import { startOfMonth } from '@/lib/date';
 import { customCountdownTasks } from '@/lib/countdown';
+import { isSubscriptionTask, resolveSubscription } from '@/lib/subscriptions';
 import { autoPostpone } from '@/lib/tasks';
 import { doc, history, initStore, redo, storeState, taskList, undo, type ReplayResult } from '@/stores/doc';
 import { updateHolidays } from '@/stores/holidays';
@@ -48,11 +49,14 @@ import CalendarStage from './CalendarStage.vue';
 import TasksView from './TasksView.vue';
 import InboxView from './InboxView.vue';
 import CountdownView from './CountdownView.vue';
+import SubscriptionView from './SubscriptionView.vue';
 import AreaView from './AreaView.vue';
 import TaskInspector from './TaskInspector.vue';
 import QuickModal from './QuickModal.vue';
 import TaskHoverCard from './TaskHoverCard.vue';
 import { cancelTaskPreview } from './useTaskHoverPreview';
+import { endTaskDrag } from './workspaceDrag';
+import './transitions.css';
 import './workspace.css';
 
 const GanttView = defineAsyncComponent(() => import('../desk/gantt/GanttView.vue'));
@@ -176,6 +180,27 @@ const calView = ref<'day' | 'multiday' | 'month' | 'weeks'>(
   })(),
 );
 
+const INBOX_RAIL_KEY = 'fluentcal.workspace.inboxRail.v1';
+const inboxRailOpen = ref<boolean>(
+  (() => {
+    try {
+      const v = localStorage.getItem(INBOX_RAIL_KEY);
+      if (v === '0') return false;
+    } catch {
+      /* ignore */
+    }
+    return true;
+  })(),
+);
+function toggleInboxRail() {
+  inboxRailOpen.value = !inboxRailOpen.value;
+  try {
+    localStorage.setItem(INBOX_RAIL_KEY, inboxRailOpen.value ? '1' : '0');
+  } catch {
+    /* ignore */
+  }
+}
+
 const searchQuery = ref('');
 const filterGroupId = ref('');
 const settingsPage = ref<string | undefined>(undefined);
@@ -262,6 +287,7 @@ const TITLE_MAP: Record<Exclude<WorkspacePageKind, 'area'>, string> = {
   inbox: '收集箱',
   tasks: '待办清单',
   countdowns: '倒数日',
+  subscriptions: '订阅日历',
   gantt: '项目甘特',
   settings: '设置',
 };
@@ -386,7 +412,7 @@ const inboxCount = computed(() => {
   const todayIso = now.value;
   let n = 0;
   for (const t of taskList.value) {
-    if (t.countdownOnly) continue;
+    if (t.countdownOnly || t.subscriptionOnly) continue;
     const b = classifyTaskBucket(t, todayIso);
     if (b === 'anytime' || b === 'overdue') n++;
   }
@@ -397,13 +423,27 @@ const openCount = computed(() => {
   const todayIso = now.value;
   let n = 0;
   for (const t of taskList.value) {
-    if (t.countdownOnly) continue;
+    if (t.countdownOnly || t.subscriptionOnly) continue;
     if (classifyTaskBucket(t, todayIso) !== 'completed') n++;
   }
   return n;
 });
 
 const countdownCount = computed(() => customCountdownTasks(taskList.value).length);
+
+const subscriptionDueCount = computed(() => {
+  const todayIso = now.value;
+  let n = 0;
+  for (const t of taskList.value) {
+    if (!isSubscriptionTask(t)) continue;
+    const r = resolveSubscription(t, todayIso);
+    if (!r) continue;
+    if (r.meta.status === 'active' || r.meta.status === 'trial') {
+      if (r.window.remainDays <= 3) n++;
+    }
+  }
+  return n;
+});
 
 function openTaskInInspector(taskId: string, date?: ISODate) {
   inspectorPayload.value = { mode: 'edit', taskId, date };
@@ -595,6 +635,72 @@ async function submitLogin() {
 }
 
 let booted = false;
+let stopMobileSync: (() => void) | null = null;
+let stopMobileListeners: (() => void) | null = null;
+
+async function bootMobileNative() {
+  if (!isMobile) return;
+  const [{ Capacitor }, { App }, syncMod, notifMod] = await Promise.all([
+    import('@capacitor/core'),
+    import('@capacitor/app'),
+    import('@/mobile/sync'),
+    import('@/mobile/notifications'),
+  ]);
+  stopMobileSync = await syncMod.startSync();
+  void notifMod.updateNotifications(doc);
+
+  const stopNotifWatch = watch(
+    () => [doc.tasks, doc.settings.reminders],
+    () => {
+      void notifMod.updateNotifications(doc);
+    },
+    { deep: true },
+  );
+
+  if (Capacitor.isNativePlatform()) {
+    const backHandle = await App.addListener('backButton', () => {
+      if (quickModalOpen.value) {
+        quickModalOpen.value = false;
+        return;
+      }
+      if (inspectorPayload.value) {
+        inspectorPayload.value = null;
+        return;
+      }
+      if (mobileDrawerOpen.value) {
+        mobileDrawerOpen.value = false;
+        return;
+      }
+      if (canGoBack.value) {
+        goBack();
+        return;
+      }
+      if (activeKind.value !== 'daily') {
+        navigateTo('daily');
+        return;
+      }
+      void App.minimizeApp();
+    });
+    const stateHandle = await App.addListener('appStateChange', ({ isActive }) => {
+      if (isActive) {
+        void syncMod.syncNow(false);
+        void notifMod.updateNotifications(doc);
+      } else {
+        void syncMod.syncNow(false);
+      }
+    });
+    stopMobileListeners = () => {
+      stopNotifWatch();
+      void backHandle.remove();
+      void stateHandle.remove();
+    };
+  } else {
+    stopMobileListeners = () => {
+      stopNotifWatch();
+    };
+  }
+}
+
 async function bootWorkspace() {
   if (booted) return;
   booted = true;
@@ -602,6 +708,9 @@ async function bootWorkspace() {
   ui.weeksStart = defaultWeeksStart();
   void autoPostpone();
   void updateHolidays();
+  if (isMobile) {
+    void bootMobileNative();
+  }
   startClock((day, prev) => {
     if (ui.cursor === startOfMonth(prev)) ui.cursor = startOfMonth(day);
     if (ui.weeksStart === defaultWeeksStart(prev)) ui.weeksStart = defaultWeeksStart(day);
@@ -618,6 +727,8 @@ onMounted(async () => {
   setGanttHandler(() => navigateTo('gantt'));
   setCountdownsHandler(() => navigateTo('countdowns'));
   window.addEventListener('keydown', onKey);
+  window.addEventListener('dragend', endTaskDrag);
+  window.addEventListener('drop', endTaskDrag);
 
   // Reveal the native OS window immediately so startup feels responsive.
   try {
@@ -636,7 +747,11 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   sidebarSpring.dispose();
+  stopMobileSync?.();
+  stopMobileListeners?.();
   window.removeEventListener('keydown', onKey);
+  window.removeEventListener('dragend', endTaskDrag);
+  window.removeEventListener('drop', endTaskDrag);
   setEditorHandler(null);
   setSettingsHandler(null);
   setGanttHandler(null);
@@ -660,6 +775,7 @@ onBeforeUnmount(() => {
           :inbox-count="inboxCount"
           :open-count="openCount"
           :countdown-count="countdownCount"
+          :subscription-due-count="subscriptionDueCount"
           :ws-theme="wsTheme"
           @toggle="toggleNavSurface"
           @navigate="navigateTo"
@@ -730,6 +846,7 @@ onBeforeUnmount(() => {
         ref="topBarRef"
         :sidebar-open="sidebarOpen"
         :compact-nav="isCompactNav"
+        :inbox-rail-open="inboxRailOpen"
         :tabs="tabs"
         :active-tab-id="activeTabId"
         :active-kind="activeKind"
@@ -741,6 +858,7 @@ onBeforeUnmount(() => {
         :search-query="searchQuery"
         :filter-group-id="filterGroupId"
         @toggle-sidebar="toggleNavSurface"
+        @toggle-inbox-rail="toggleInboxRail"
         @go-back="goBack"
         @go-forward="goForward"
         @select-tab="selectTabFromBar"
@@ -757,20 +875,25 @@ onBeforeUnmount(() => {
         @open-quick-modal="openQuick"
       />
 
-      <div class="ws-sheet">
+      <div class="ws-sheet" :class="{ 'dual-cards': !isPhone && activeKind === 'daily' }">
         <main class="ws-stage" @contextmenu="onStageContextMenu">
           <template v-if="storeState.ready">
             <Transition name="ws-stage" mode="out-in">
               <DailyView
                 v-if="activeKind === 'daily'"
                 key="view:daily"
+                :inbox-rail-open="inboxRailOpen"
                 @open-task="openTaskInInspector"
+                @open-group="(gid) => navigateTo('area', gid)"
                 @open-countdowns="openCountdownsPage"
+                @open-subscriptions="navigateTo('subscriptions')"
+                @toggle-inbox-rail="toggleInboxRail"
               />
               <CalendarStage
                 v-else-if="activeKind === 'calendar'"
                 key="view:calendar"
                 :cal-view="calView"
+                @update:cal-view="updateCalView"
               />
               <TasksView
                 v-else-if="activeKind === 'tasks'"
@@ -790,6 +913,10 @@ onBeforeUnmount(() => {
               <CountdownView
                 v-else-if="activeKind === 'countdowns'"
                 key="view:countdowns"
+              />
+              <SubscriptionView
+                v-else-if="activeKind === 'subscriptions'"
+                key="view:subscriptions"
               />
               <AreaView
                 v-else-if="activeKind === 'area' && activeGroupId"
@@ -862,6 +989,7 @@ onBeforeUnmount(() => {
       :inbox-count="inboxCount"
       :open-count="openCount"
       :countdown-count="countdownCount"
+      :subscription-due-count="subscriptionDueCount"
       :ws-theme="wsTheme"
       @close="closeDrawer"
       @navigate="navigateTo"
@@ -1024,17 +1152,24 @@ onBeforeUnmount(() => {
 }
 
 .toast-enter-active {
-  transition: opacity var(--ws-dur-fast) var(--ws-ease-out), transform var(--ws-dur-fast) var(--ws-ease-out);
+  transition:
+    opacity var(--toast-open, 350ms) var(--toast-ease, cubic-bezier(0.22, 1, 0.36, 1)),
+    transform var(--toast-open, 350ms) var(--toast-ease, cubic-bezier(0.22, 1, 0.36, 1)),
+    filter var(--toast-open, 350ms) var(--toast-ease, cubic-bezier(0.22, 1, 0.36, 1));
 }
 
 .toast-leave-active {
-  transition: opacity 160ms var(--ws-ease-out), transform 160ms var(--ws-ease-out);
+  transition:
+    opacity var(--toast-close, 250ms) var(--toast-ease, cubic-bezier(0.22, 1, 0.36, 1)),
+    transform var(--toast-close, 250ms) var(--toast-ease, cubic-bezier(0.22, 1, 0.36, 1)),
+    filter var(--toast-close, 250ms) var(--toast-ease, cubic-bezier(0.22, 1, 0.36, 1));
 }
 
 .toast-enter-from,
 .toast-leave-to {
   opacity: 0;
-  transform: translateY(8px);
+  transform: translateY(var(--toast-distance, 16px)) scale(var(--toast-scale, 0.97));
+  filter: blur(var(--toast-blur, 2px));
 }
 
 .ws-main.is-phone .ws-toast {

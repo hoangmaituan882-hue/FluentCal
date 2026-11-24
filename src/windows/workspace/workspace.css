@@ -221,17 +221,37 @@ html[data-window='workspace'] body {
   position: relative;
   display: flex;
   flex-direction: column;
+  margin: 0 10px 10px 0;
   background: var(--ws-card-bg);
-  border-top: 1px solid var(--ws-hairline);
-  border-left: 1px solid var(--ws-hairline);
-  border-top-left-radius: 18px;
+  border: 1px solid var(--ws-hairline);
+  border-radius: 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
   overflow: hidden;
-  transition: border-radius 220ms var(--ws-ease-out);
+  transition: border-radius 220ms var(--ws-ease-out), margin 220ms var(--ws-ease-out);
+}
+
+.ws-sheet.dual-cards {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.ws-sheet.dual-cards > .ws-stage {
+  padding: 0;
+  overflow: visible;
 }
 
 .ws-main.sb-closed .ws-sheet {
-  border-left: 0;
-  border-top-left-radius: 0;
+  margin-left: 10px;
+}
+
+.ws-main.is-phone .ws-sheet {
+  margin: 0;
+  border-radius: 0;
+  border: 0;
+  box-shadow: none;
 }
 
 .ws-stage {
@@ -593,22 +613,26 @@ html[data-window='workspace'] body {
   }
 }
 
-/* Modal scale-in / faster quiet close transition */
+/* Modal scale-in / faster quiet close transition (transitions.dev 06-modal) */
 .ws-modal-enter-active {
-  transition: opacity var(--ws-dur-fast) var(--ws-ease-out);
+  transition: opacity var(--modal-open-dur, 250ms) var(--modal-ease, cubic-bezier(0.22, 1, 0.36, 1));
 }
 
 .ws-modal-leave-active {
   pointer-events: none;
-  transition: opacity var(--ws-dur-quick) var(--ws-ease-out);
+  transition: opacity var(--modal-close-dur, 150ms) var(--modal-ease, cubic-bezier(0.22, 1, 0.36, 1));
 }
 
 .ws-modal-enter-active .ws-modal-card {
-  transition: transform var(--ws-dur-fast) var(--ws-ease-out), opacity var(--ws-dur-fast) var(--ws-ease-out);
+  transition:
+    transform var(--modal-open-dur, 250ms) var(--modal-ease, cubic-bezier(0.22, 1, 0.36, 1)),
+    opacity var(--modal-open-dur, 250ms) var(--modal-ease, cubic-bezier(0.22, 1, 0.36, 1));
 }
 
 .ws-modal-leave-active .ws-modal-card {
-  transition: transform var(--ws-dur-quick) var(--ws-ease-out), opacity var(--ws-dur-quick) var(--ws-ease-out);
+  transition:
+    transform var(--modal-close-dur, 150ms) var(--modal-ease, cubic-bezier(0.22, 1, 0.36, 1)),
+    opacity var(--modal-close-dur, 150ms) var(--modal-ease, cubic-bezier(0.22, 1, 0.36, 1));
 }
 
 .ws-modal-enter-from,
@@ -618,12 +642,12 @@ html[data-window='workspace'] body {
 
 .ws-modal-enter-from .ws-modal-card {
   opacity: 0;
-  transform: scale(0.96) translateY(8px);
+  transform: scale(var(--modal-scale, 0.96)) translateY(6px);
 }
 
 .ws-modal-leave-to .ws-modal-card {
   opacity: 0;
-  transform: scale(0.97);
+  transform: scale(var(--modal-scale-close, 0.96));
 }
 
 @media (prefers-reduced-motion: reduce) {

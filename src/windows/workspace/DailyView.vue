@@ -2,18 +2,17 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { FIcon, showMenu, taskColor, type MenuItem } from '@/fluent';
 import type { ISODate, Task } from '@/types';
-import { addDays, parts, startOfMonth, weekday, WEEKDAY_SHORT } from '@/lib/date';
+import { addDays, formatMD, parts, startOfMonth, weekday, WEEKDAY_SHORT } from '@/lib/date';
 import { flexKind } from '@/lib/flex';
 import { displayInfo as dayInfo } from '@/lib/lunar';
 import { occurrences, type Occurrence } from '@/lib/recur';
 import { countdowns } from '@/lib/countdown';
+import { isSubscriptionTask, resolveSubscription } from '@/lib/subscriptions';
 import {
   applyTaskStatus,
   checklistStats,
   effectivePriority,
-  effectiveStatus,
   effectiveWorkspaceStatus,
-  PRIORITY_META,
   STATUS_META,
   WORKSPACE_STATUS_ORDER,
 } from '@/lib/taskMeta';
@@ -23,77 +22,182 @@ import { isDark } from '@/composables/theme';
 import { now } from '@/composables/now';
 import { useViewport } from '@/composables/useViewport';
 import { goToday, ui } from '../desk/state';
-import DayView from '../desk/DayView.vue';
-import GroupSquircle from './GroupSquircle.vue';
-import MobileCalicoStage from './MobileCalicoStage.vue';
-import PriorityGlyph from './PriorityGlyph.vue';
-import StatusGlyph from './StatusGlyph.vue';
 import { useSlidingIndicator } from './useSlidingIndicator';
-import { buildWeekStrip } from './workspaceModel';
+import MobileCalicoStage from './MobileCalicoStage.vue';
+import NumberPop from './NumberPop.vue';
+import TaskCheckButton from './TaskCheckButton.vue';
+import WorkspaceInboxRail from './WorkspaceInboxRail.vue';
 import { openTaskContextMenu, STATUS_DOT_COLOR } from './workspaceMenus';
+import {
+  dropTaskToDate,
+  endTaskDrag,
+  getDraggedTaskId,
+  hasTaskDragPayload,
+  startTaskDrag,
+  workspaceDrag,
+} from './workspaceDrag';
+
+const props = withDefaults(
+  defineProps<{
+    inboxRailOpen?: boolean;
+  }>(),
+  {
+    inboxRailOpen: true,
+  },
+);
 
 const emit = defineEmits<{
   openTask: [taskId: string, date?: ISODate];
+  openGroup: [groupId: string];
   openCountdowns: [];
+  openSubscriptions: [];
+  toggleInboxRail: [];
 }>();
 
 const quickTitle = ref('');
-const { width: vpWidth, isPhone, isTouch } = useViewport();
-const isStackedDaily = computed(() => vpWidth.value < 880);
-const mobilePane = ref<'overview' | 'timeline'>('overview');
-const paneSwitchRef = ref<HTMLElement>();
+const summaryFilter = ref<'all' | 'events' | 'habits' | 'important'>('all');
+const dragOverDay = ref<ISODate | null>(null);
+const dragOverStream = ref(false);
 
-const { style: panePillStyle, ready: panePillReady, visible: panePillVisible } = useSlidingIndicator(
-  paneSwitchRef,
-  '.dp-sw-btn.active',
-  [mobilePane, isStackedDaily],
-);
-
-function setMobilePane(pane: 'overview' | 'timeline') {
-  mobilePane.value = pane;
-}
+const { width: vpWidth, isPhone } = useViewport();
+const showRightRail = computed(() => !isPhone.value && props.inboxRailOpen && vpWidth.value >= 920);
 
 const selectedDate = computed(() => ui.selected || now.value);
 const selectedParts = computed(() => parts(selectedDate.value));
 const selectedInfo = computed(() => dayInfo(selectedDate.value));
-const selectedEyebrow = computed(() => {
+
+const isViewingToday = computed(() => selectedDate.value === now.value);
+
+const heroHeading = computed(() =>
+  isViewingToday.value ? '今日' : `${selectedParts.value[1]}月${selectedParts.value[2]}日`,
+);
+
+const heroDateLine = computed(() => {
+  const [y, m, d] = selectedParts.value;
   const wd = `周${WEEKDAY_SHORT[weekday(selectedDate.value)]}`;
-  const extra = selectedInfo.value.festivals[0] || selectedInfo.value.term || selectedInfo.value.lunarLabel;
-  return `${wd} · 农历${selectedInfo.value.lunarLabel}${extra && extra !== selectedInfo.value.lunarLabel ? ` · ${extra}` : ''}`;
+  const extra = selectedInfo.value.festivals[0] || selectedInfo.value.term;
+  return `${y}年${m}月${d}日 · ${wd} · 农历${selectedInfo.value.lunarLabel}${extra ? ` · ${extra}` : ''}`;
 });
 
-const weekDays = computed(() => buildWeekStrip(selectedDate.value, doc.settings.calendar.weekStart));
+// 11-day open flowing date strip anchored cleanly from selectedDate (or today)
+const stripStart = ref<ISODate>(now.value);
+const dayStripRef = ref<HTMLElement>();
+const daySlideDir = ref<'next' | 'prev'>('next');
 
-const taskDaysSet = computed(() => {
-  const start = weekDays.value[0];
-  const end = weekDays.value[weekDays.value.length - 1];
-  const days = new Set<ISODate>();
+const stripDays = computed<ISODate[]>(() => {
+  const sel = selectedDate.value;
+  const curStart = stripStart.value;
+  const curEnd = addDays(curStart, 10);
+  const base = sel < curStart || sel > curEnd ? addDays(sel, -1) : curStart;
+  return Array.from({ length: 11 }, (_, i) => addDays(base, i));
+});
+
+const {
+  style: dayPillStyle,
+  visible: dayPillVisible,
+  ready: dayPillReady,
+} = useSlidingIndicator(dayStripRef, '.wd-day-cell.selected', [selectedDate, stripDays, vpWidth]);
+
+function selectDate(d: ISODate) {
+  if (d !== selectedDate.value) {
+    daySlideDir.value = d > selectedDate.value ? 'next' : 'prev';
+  }
+  ui.selected = d;
+  ui.cursor = startOfMonth(d);
+  summaryFilter.value = 'all';
+}
+
+function stepDay(delta: number) {
+  const next = addDays(selectedDate.value, delta);
+  selectDate(next);
+}
+
+function jumpToday() {
+  daySlideDir.value = now.value >= selectedDate.value ? 'next' : 'prev';
+  goToday();
+  stripStart.value = now.value;
+  summaryFilter.value = 'all';
+}
+
+// Plan 1: Damped Mouse Wheel / Trackpad Day Switching (Header & Date Strip direct + Shift+Wheel / Horizontal anywhere)
+let wheelAccum = 0;
+let wheelCooldownUntil = 0;
+let wheelResetTimer: ReturnType<typeof setTimeout> | undefined;
+
+function consumeDayWheel(delta: number) {
+  const ts = performance.now();
+  if (ts < wheelCooldownUntil) return;
+  wheelAccum += delta;
+  clearTimeout(wheelResetTimer);
+  wheelResetTimer = setTimeout(() => {
+    wheelAccum = 0;
+  }, 180);
+
+  const THRESHOLD = 38;
+  if (Math.abs(wheelAccum) >= THRESHOLD) {
+    const dir = wheelAccum > 0 ? 1 : -1;
+    wheelAccum = 0;
+    wheelCooldownUntil = ts + 210;
+    stepDay(dir);
+  }
+}
+
+function onStripZoneWheel(e: WheelEvent) {
+  const primary = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+  if (!primary) return;
+  e.preventDefault();
+  consumeDayWheel(primary);
+}
+
+function onSheetWheel(e: WheelEvent) {
+  // Anywhere on Today sheet: Shift+Wheel OR horizontal trackpad swipe switches days without fighting vertical list scroll
+  if (e.shiftKey) {
+    const primary = e.deltaY || e.deltaX;
+    if (!primary) return;
+    e.preventDefault();
+    consumeDayWheel(primary);
+    return;
+  }
+  if (Math.abs(e.deltaX) > 12 && Math.abs(e.deltaX) > Math.abs(e.deltaY) * 1.35) {
+    e.preventDefault();
+    consumeDayWheel(e.deltaX);
+  }
+}
+
+const stripDotColors = computed<Record<ISODate, string[]>>(() => {
+  const start = stripDays.value[0];
+  const end = stripDays.value[stripDays.value.length - 1];
+  const map: Record<ISODate, string[]> = {};
   for (const t of taskList.value) {
-    if (t.countdownOnly) continue;
+    if (t.countdownOnly || t.subscriptionOnly || flexKind(t)) continue;
+    const key = t.color || (t.groupId ? doc.groups[t.groupId]?.color : '') || '';
+    const hex = key ? taskColor(key, isDark.value).bar : '#E84C3D';
     for (const o of occurrences(t, start, end)) {
+      if (o.done) continue;
       let d = o.start < start ? start : o.start;
       const limit = o.end > end ? end : o.end;
       while (d <= limit) {
-        days.add(d);
+        const arr = (map[d] ??= []);
+        if (arr.length < 3 && !arr.includes(hex)) arr.push(hex);
         d = addDays(d, 1);
       }
     }
   }
-  return days;
+  return map;
 });
 
 const dayOccurrences = computed<Occurrence[]>(() => {
   const d = selectedDate.value;
   const out: Occurrence[] = [];
   for (const t of taskList.value) {
-    if (t.countdownOnly) continue;
+    if (t.countdownOnly || t.subscriptionOnly || flexKind(t)) continue;
     out.push(...occurrences(t, d, d));
   }
   out.sort((a, b) => {
     if (a.done !== b.done) return Number(a.done) - Number(b.done);
-    const aIp = effectiveStatus(a.task) === 'in_progress' ? 0 : 1;
-    const bIp = effectiveStatus(b.task) === 'in_progress' ? 0 : 1;
-    if (aIp !== bIp) return aIp - bIp;
+    const aEvent = isCalendarEventRow(a) ? 1 : 0;
+    const bEvent = isCalendarEventRow(b) ? 1 : 0;
+    if (aEvent !== bEvent) return aEvent - bEvent;
     const at = a.task.time ?? '99:99';
     const bt = b.task.time ?? '99:99';
     if (at !== bt) return at < bt ? -1 : 1;
@@ -102,19 +206,53 @@ const dayOccurrences = computed<Occurrence[]>(() => {
   return out;
 });
 
-const inProgressTasks = computed<Task[]>(() =>
-  taskList.value
-    .filter((t) => {
-      if (t.countdownOnly || t.done) return false;
-      const st = effectiveWorkspaceStatus(t);
-      return st === 'in_progress' || st === 'in_review';
-    })
-    .sort((a, b) => b.updatedAt - a.updatedAt)
-    .slice(0, 4),
-);
+function isCalendarEventRow(occ: Occurrence): boolean {
+  if (occ.done) return false;
+  const st = effectiveWorkspaceStatus(occ.task);
+  const pri = effectivePriority(occ.task);
+  return !!occ.task.time && !occ.task.repeat && st === 'todo' && pri === 'none' && !occ.task.checklist?.length;
+}
 
-const upcomingCountdowns = computed(() =>
-  countdowns(
+const greetingText = computed(() => {
+  const hr = new Date().getHours();
+  if (hr < 12) return '早上好';
+  if (hr < 18) return '下午好';
+  return '晚上好';
+});
+
+const summaryStats = computed(() => {
+  let events = 0;
+  let habits = 0;
+  let important = 0;
+  for (const o of dayOccurrences.value) {
+    if (o.done) continue;
+    if (o.task.time) events++;
+    if (o.task.repeat) habits++;
+    const p = effectivePriority(o.task);
+    if (p === 'urgent' || p === 'high' || effectiveWorkspaceStatus(o.task) === 'in_progress') {
+      important++;
+    }
+  }
+  return { events, habits, important, openTotal: dayOccurrences.value.filter((o) => !o.done).length };
+});
+
+const filteredOccurrences = computed(() => {
+  const f = summaryFilter.value;
+  if (f === 'all') return dayOccurrences.value;
+  return dayOccurrences.value.filter((o) => {
+    if (o.done) return false;
+    if (f === 'events') return !!o.task.time;
+    if (f === 'habits') return !!o.task.repeat;
+    if (f === 'important') {
+      const p = effectivePriority(o.task);
+      return p === 'urgent' || p === 'high' || effectiveWorkspaceStatus(o.task) === 'in_progress';
+    }
+    return true;
+  });
+});
+
+const nextCountdown = computed(() => {
+  const list = countdowns(
     taskList.value.map((t) => (t.groupId && !doc.groups[t.groupId] ? { ...t, groupId: undefined } : t)),
     now.value,
     doc.settings.calendar.holidayCountdown,
@@ -122,45 +260,114 @@ const upcomingCountdowns = computed(() =>
     doc.settings.calendar.countdownGroups,
     doc.settings.calendar.countdownFestival,
     doc.settings.calendar.countdownTerm,
-  ).slice(0, 4),
-);
+  );
+  return list[0] ?? null;
+});
 
-function selectDate(d: ISODate) {
-  ui.selected = d;
-  ui.cursor = startOfMonth(d);
+const soonSubscription = computed(() => {
+  const todayIso = now.value;
+  const upcoming = taskList.value
+    .filter(isSubscriptionTask)
+    .filter((t) => t.subscription.status === 'active' || t.subscription.status === 'trial')
+    .map((t) => resolveSubscription(t, todayIso))
+    .filter((s) => s.window.remainDays <= 3)
+    .sort((a, b) => a.window.remainDays - b.window.remainDays);
+  return upcoming[0] ?? null;
+});
+
+function toggleSummaryFilter(kind: 'events' | 'habits' | 'important') {
+  summaryFilter.value = summaryFilter.value === kind ? 'all' : kind;
 }
 
-function stepDay(delta: number) {
-  selectDate(addDays(selectedDate.value, delta));
+function occGlyphVariant(occ: Occurrence): 'done' | 'event' | 'progress' | 'important' | 'regular' {
+  if (occ.done) return 'done';
+  if (isCalendarEventRow(occ)) return 'event';
+  const st = effectiveWorkspaceStatus(occ.task);
+  if (st === 'in_progress' || st === 'in_review') return 'progress';
+  const pri = effectivePriority(occ.task);
+  if (pri === 'urgent' || pri === 'high') return 'important';
+  return 'regular';
 }
 
-function groupColorOf(t: Task): string {
-  const key = t.color || (t.groupId ? doc.groups[t.groupId]?.color : undefined);
-  return key ? taskColor(key, isDark.value).bar : '#9E9990';
+function occDotColor(occ: Occurrence): string {
+  const key = occ.task.color || (occ.task.groupId ? doc.groups[occ.task.groupId]?.color : '') || '';
+  return key ? taskColor(key, isDark.value).bar : '#E84C3D';
 }
 
-async function addTodayTask() {
-  const title = quickTitle.value.trim();
-  if (!title) return;
-  quickTitle.value = '';
-  await addTask({ title, start: selectedDate.value, end: selectedDate.value });
+function groupPill(t: Task) {
+  if (!t.groupId || !doc.groups[t.groupId]) return null;
+  const g = doc.groups[t.groupId];
+  const hex = taskColor(g.color, isDark.value).bar;
+  return {
+    name: g.name,
+    color: hex,
+    bg: `color-mix(in srgb, ${hex} 13%, transparent)`,
+  };
+}
+
+function attachedNotePreview(t: Task): { title: string; meta: string } | null {
+  const note = t.notes?.trim();
+  const chk = t.checklist ?? [];
+  if (!note && !chk.length) return null;
+  if (note) {
+    const lines = note.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const first = lines[0] ?? note;
+    const pts = chk.length ? `备注 · ${chk.length} 项子步骤` : `备注 · ${lines.length} 条要点`;
+    return { title: first, meta: pts };
+  }
+  const stats = checklistStats(chk);
+  return {
+    title: chk[0]?.text ?? '执行清单',
+    meta: `子步骤 · ${stats.done}/${stats.total} 已完成`,
+  };
+}
+
+function shortDateStr(iso: ISODate): string {
+  return `${formatMD(iso)} 周${WEEKDAY_SHORT[weekday(iso)]}`;
+}
+
+const completingKeys = ref<Set<string>>(new Set());
+
+function occKeyStr(occ: Occurrence): string {
+  return `${occ.task.id}@${occ.date}`;
+}
+
+function isVisualDone(occ: Occurrence): boolean {
+  return occ.done || completingKeys.value.has(occKeyStr(occ));
 }
 
 function toggleOcc(occ: Occurrence) {
-  void setOccurrenceDone(occ.task, occ.date, !occ.done);
+  const key = occKeyStr(occ);
+  if (!occ.done) {
+    if (completingKeys.value.has(key)) return;
+    const next = new Set(completingKeys.value);
+    next.add(key);
+    completingKeys.value = next;
+    setTimeout(() => {
+      void setOccurrenceDone(occ.task, occ.date, true);
+      const after = new Set(completingKeys.value);
+      after.delete(key);
+      completingKeys.value = after;
+    }, 390);
+    return;
+  }
+  void setOccurrenceDone(occ.task, occ.date, false);
 }
 
-function occStatus(occ: Occurrence) {
-  return occ.done ? 'done' : effectiveWorkspaceStatus(occ.task);
-}
-
-function onOccStatusClick(occ: Occurrence, e: MouseEvent) {
+function onGlyphClick(occ: Occurrence, e: MouseEvent) {
   if (e.shiftKey || occ.task.repeat || flexKind(occ.task)) {
     toggleOcc(occ);
     return;
   }
+  // Single click completes immediately (Woday tactile delight); Shift/right-click opens status menu
+  toggleOcc(occ);
+}
+
+function onGlyphContext(occ: Occurrence, e: MouseEvent) {
+  e.preventDefault();
+  e.stopPropagation();
   const anchor = e.currentTarget as HTMLElement;
-  const cur = occStatus(occ);
+  const cur = occ.done ? 'done' : effectiveWorkspaceStatus(occ.task);
   const items: MenuItem[] = WORKSPACE_STATUS_ORDER.map((st) => ({
     key: `st:${st}`,
     label: STATUS_META[st].label,
@@ -173,11 +380,45 @@ function onOccStatusClick(occ: Occurrence, e: MouseEvent) {
 }
 
 function openDayTaskMenu(t: Task, date: ISODate | undefined, e: MouseEvent) {
-  const at =
-    e.clientX || e.clientY
-      ? { x: e.clientX, y: e.clientY }
-      : ((e.currentTarget as HTMLElement) || { x: 24, y: 24 });
-  void openTaskContextMenu(t, at, { date, onOpen: () => emit('openTask', t.id, date) });
+  void openTaskContextMenu(t, { x: e.clientX, y: e.clientY }, {
+    date,
+    onOpen: () => emit('openTask', t.id, date),
+  });
+}
+
+async function addTodayTask() {
+  const title = quickTitle.value.trim();
+  if (!title) return;
+  quickTitle.value = '';
+  await addTask({ title, start: selectedDate.value, end: selectedDate.value });
+}
+
+// Drag-and-Drop from Right Inbox Rail / Any View onto Today Stream or Any Day in the 11-Day Strip
+function onStreamDragOver(e: DragEvent) {
+  if (!hasTaskDragPayload(e)) return;
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+  dragOverStream.value = true;
+}
+
+function onDayCellDragOver(d: ISODate, e: DragEvent) {
+  if (!hasTaskDragPayload(e)) return;
+  e.preventDefault();
+  e.stopPropagation();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+  dragOverDay.value = d;
+}
+
+function scheduleDroppedTask(e: DragEvent, targetDate: ISODate) {
+  dragOverDay.value = null;
+  dragOverStream.value = false;
+  const id = getDraggedTaskId(e);
+  if (!id) return;
+  e.preventDefault();
+  void dropTaskToDate(id, targetDate);
+  if (targetDate !== selectedDate.value) {
+    selectDate(targetDate);
+  }
 }
 
 onMounted(() => {
@@ -185,12 +426,13 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  clearTimeout(wheelResetTimer);
   if (ui.activeView === 'day') ui.activeView = '';
 });
 </script>
 
 <template>
-  <div class="ws-daily" :class="{ stacked: isStackedDaily, phone: isPhone }">
+  <div class="ws-daily" :class="{ phone: isPhone, 'woday-dual': !isPhone }">
     <!-- Dedicated Calico 3-Detent Split Calendar & Agenda Stage on Phone (< 640px) -->
     <MobileCalicoStage
       v-if="isPhone"
@@ -198,219 +440,273 @@ onBeforeUnmount(() => {
       @open-countdowns="emit('openCountdowns')"
     />
 
+    <!-- Woday Dual Floating White Sheets on Desktop / Tablet -->
     <template v-else>
-    <!-- Folio Daily editorial header + Week Strip -->
-    <div class="daily-top">
-      <div class="daily-head-row">
-        <div>
-          <div class="ws-eyebrow">{{ selectedEyebrow }}</div>
-          <h1 class="daily-date-title">
-            <span>{{ selectedParts[1] }}月{{ selectedParts[2] }}日</span>
-            <span class="daily-year">{{ selectedParts[0] }}</span>
-          </h1>
-        </div>
-        <div class="daily-nav-pills">
-          <button type="button" class="ws-icon-circle solid" title="前一天" @click="stepDay(-1)">
-            <FIcon name="chevronLeft" :size="12" />
-          </button>
-          <button type="button" class="daily-today-btn" @click="goToday()">今天</button>
-          <button type="button" class="ws-icon-circle solid" title="后一天" @click="stepDay(1)">
-            <FIcon name="chevronRight" :size="12" />
-          </button>
-        </div>
-      </div>
-
-      <div class="week-strip" role="radiogroup" aria-label="本周日期">
-        <button
-          v-for="d in weekDays"
-          :key="d"
-          type="button"
-          class="week-day-btn"
-          :class="{ active: d === selectedDate, today: d === now }"
-          @click="selectDate(d)"
+      <div class="wd-dual-layout">
+        <!-- Main Left/Center Sheet: Today -->
+        <section
+          class="wd-today-sheet"
+          :class="{ 'drop-active': dragOverStream }"
+          @wheel="onSheetWheel"
+          @dragover="onStreamDragOver"
+          @dragleave="dragOverStream = false"
+          @drop.prevent="scheduleDroppedTask($event, selectedDate)"
         >
-          <span class="wd-name">周{{ WEEKDAY_SHORT[weekday(d)] }}</span>
-          <span class="wd-num">{{ parts(d)[2] }}</span>
-          <span class="wd-dot" :class="{ on: taskDaysSet.has(d) }" aria-hidden="true" />
-        </button>
-      </div>
-
-      <div v-if="isStackedDaily" ref="paneSwitchRef" class="dp-pane-switch" role="tablist" aria-label="今日视图切换">
-        <span
-          v-if="panePillVisible"
-          class="ws-slide-pill dp-sw-pill"
-          :class="{ 'no-anim': !panePillReady }"
-          :style="panePillStyle"
-          aria-hidden="true"
-        />
-        <button
-          type="button"
-          class="dp-sw-btn"
-          :class="{ active: mobilePane === 'overview' }"
-          role="tab"
-          :aria-selected="mobilePane === 'overview'"
-          @click="setMobilePane('overview')"
-        >
-          今日概览
-        </button>
-        <button
-          type="button"
-          class="dp-sw-btn"
-          :class="{ active: mobilePane === 'timeline' }"
-          role="tab"
-          :aria-selected="mobilePane === 'timeline'"
-          @click="setMobilePane('timeline')"
-        >
-          时间轴
-        </button>
-      </div>
-    </div>
-
-    <!-- Split Workspace: Reused DayView Timeline (left) + Focus & Tasks Panel (right) -->
-    <div class="daily-grid" :class="{ stacked: isStackedDaily }">
-      <div v-if="!isStackedDaily || mobilePane === 'timeline'" class="daily-timeline-card ws-card">
-        <DayView />
-      </div>
-
-      <div v-if="!isStackedDaily || mobilePane === 'overview'" class="daily-side">
-        <section class="ws-card daily-panel">
-          <header class="dp-head">
-            <h2 class="dp-title">当日待办</h2>
-            <span class="dp-count">{{ dayOccurrences.filter((o) => !o.done).length }} 待办</span>
-          </header>
-
-          <div v-if="dayOccurrences.length" class="dp-list">
-            <div
-              v-for="occ in dayOccurrences"
-              :key="`${occ.task.id}@${occ.date}`"
-              class="dp-item"
-              :class="{ done: occ.done }"
-              @click="emit('openTask', occ.task.id, occ.date)"
-              @contextmenu.prevent="openDayTaskMenu(occ.task, occ.date, $event)"
-            >
-              <button
-                type="button"
-                class="dp-glyph-btn"
-                :title="`状态：${STATUS_META[occStatus(occ)].label}（Shift+点击快速完成）`"
-                @click.stop="onOccStatusClick(occ, $event)"
-              >
-                <StatusGlyph :status="occStatus(occ)" :size="15" interactive />
-              </button>
-              <div class="dp-item-body">
-                <div class="dp-item-title">{{ occ.task.title }}</div>
-                <div class="dp-item-meta">
-                  <span v-if="occ.task.time" class="dp-chip">{{ occ.task.time }}</span>
-                  <span
-                    v-if="!occ.done && (occStatus(occ) === 'in_progress' || occStatus(occ) === 'in_review')"
-                    class="dp-chip"
-                    :class="occStatus(occ)"
-                  >
-                    {{ STATUS_META[occStatus(occ)].label }}
-                  </span>
-                  <span v-if="occ.task.checklist?.length" class="dp-chip">
-                    {{ checklistStats(occ.task.checklist).done }}/{{ occ.task.checklist.length }}
-                  </span>
-                </div>
+          <div class="wd-today-inner">
+            <!-- Header Row: 'Today' + Date + 'Today < >' (Wheel switches day smoothly) -->
+            <header class="wd-head" @wheel.stop="onStripZoneWheel">
+              <div class="wd-head-left">
+                <Transition name="t-text-swap" mode="out-in">
+                  <h1 :key="heroHeading" class="wd-title">{{ heroHeading }}</h1>
+                </Transition>
+                <Transition name="t-text-swap" mode="out-in">
+                  <div :key="heroDateLine" class="wd-date-sub">{{ heroDateLine }}</div>
+                </Transition>
               </div>
-              <div class="dp-item-trail">
-                <span
-                  v-if="effectivePriority(occ.task) !== 'none'"
-                  class="dp-pri-wrap"
-                  :title="`优先级：${PRIORITY_META[effectivePriority(occ.task)].label}`"
-                >
-                  <PriorityGlyph
-                    :priority="effectivePriority(occ.task)"
-                    :size="13"
+              <div class="wd-head-right">
+                <button type="button" class="wd-today-pill" :class="{ away: !isViewingToday }" @click="jumpToday">
+                  {{ isViewingToday ? '今天' : selectedDate > now ? '← 回到今天' : '回到今天 →' }}
+                </button>
+                <button type="button" class="wd-nav-circle" title="前一天" aria-label="前一天" @click="stepDay(-1)">
+                  <FIcon name="chevronLeft" :size="13" />
+                </button>
+                <button type="button" class="wd-nav-circle" title="后一天" aria-label="后一天" @click="stepDay(1)">
+                  <FIcon name="chevronRight" :size="13" />
+                </button>
+              </div>
+            </header>
+
+            <!-- 11-Day Open Borderless Horizontal Date Strip (Liquid Sliding Pill + Wheel Switch + Drop Target!) -->
+            <div
+              ref="dayStripRef"
+              class="wd-date-strip"
+              role="radiogroup"
+              aria-label="近期日期导航（支持滚轮切换日期）"
+              @wheel.stop="onStripZoneWheel"
+            >
+              <span
+                v-if="dayPillVisible"
+                class="ws-slide-pill wd-day-slide-pill"
+                :class="{ 'no-anim': !dayPillReady }"
+                :style="dayPillStyle"
+                aria-hidden="true"
+              />
+              <button
+                v-for="d in stripDays"
+                :key="d"
+                type="button"
+                class="wd-day-cell"
+                :class="{
+                  selected: d === selectedDate,
+                  today: d === now,
+                  'drag-over': dragOverDay === d,
+                }"
+                @click="selectDate(d)"
+                @dragover="onDayCellDragOver(d, $event)"
+                @dragleave="dragOverDay === d && (dragOverDay = null)"
+                @drop.prevent.stop="scheduleDroppedTask($event, d)"
+              >
+                <span class="wd-day-num">{{ parts(d)[2] }}</span>
+                <span class="wd-day-wk">周{{ WEEKDAY_SHORT[weekday(d)] }}</span>
+                <span class="wd-day-dots" aria-hidden="true">
+                  <i
+                    v-for="(hex, idx) in (stripDotColors[d] ?? [])"
+                    :key="idx"
+                    :style="{ background: hex }"
                   />
                 </span>
-                <GroupSquircle
-                  v-if="occ.task.groupId && doc.groups[occ.task.groupId]"
-                  :name="doc.groups[occ.task.groupId].name"
-                  :color-key="doc.groups[occ.task.groupId].color"
-                  :icon="doc.groups[occ.task.groupId].icon"
-                  :size="17"
-                />
+              </button>
+            </div>
+
+            <!-- Natural-Language Daily Summary Card -->
+            <div class="wd-summary-box">
+              <div class="wd-summary-sentence">
+                <span>{{ greetingText }}，{{ isViewingToday ? '今天有' : `${selectedParts[1]}月${selectedParts[2]}日有` }}</span>
+
                 <button
-                  v-if="isTouch || isPhone"
                   type="button"
-                  class="dp-more-btn"
-                  title="更多操作"
-                  aria-label="更多操作"
-                  @click.stop="openDayTaskMenu(occ.task, occ.date, $event)"
+                  class="wd-sum-chip rose"
+                  :class="{ active: summaryFilter === 'events' }"
+                  @click="toggleSummaryFilter('events')"
                 >
-                  <FIcon name="more" :size="13" />
+                  <FIcon name="calendar" :size="12" />
+                  <span><NumberPop :value="summaryStats.events" /> 场日程</span>
+                </button>
+
+                <button
+                  type="button"
+                  class="wd-sum-chip slate"
+                  :class="{ active: summaryFilter === 'habits' }"
+                  @click="toggleSummaryFilter('habits')"
+                >
+                  <FIcon name="flame" :size="12" />
+                  <span><NumberPop :value="summaryStats.habits" /> 项日常</span>
+                </button>
+
+                <span class="wd-sum-conj">和</span>
+
+                <button
+                  type="button"
+                  class="wd-sum-chip amber"
+                  :class="{ active: summaryFilter === 'important' }"
+                  @click="toggleSummaryFilter('important')"
+                >
+                  <FIcon name="warning" :size="12" />
+                  <span><NumberPop :value="summaryStats.important" /> 项重要</span>
+                </button>
+
+                <button
+                  v-if="summaryFilter !== 'all'"
+                  type="button"
+                  class="wd-sum-clear"
+                  @click="summaryFilter = 'all'"
+                >
+                  显示全部
+                </button>
+              </div>
+
+              <div class="wd-summary-whispers">
+                <button
+                  v-if="soonSubscription"
+                  type="button"
+                  class="wd-cd-whisper sub-due"
+                  title="查看订阅日历"
+                  @click="emit('openSubscriptions')"
+                >
+                  <FIcon name="subscription" :size="11" />
+                  <span>{{ soonSubscription.task.title }}</span>
+                  <strong>{{ soonSubscription.window.remainDays === 0 ? '今日扣款' : `${soonSubscription.window.remainDays}天后` }}</strong>
+                </button>
+
+                <button
+                  v-if="nextCountdown"
+                  type="button"
+                  class="wd-cd-whisper"
+                  title="查看全部倒数日"
+                  @click="emit('openCountdowns')"
+                >
+                  <span>{{ nextCountdown.label }}</span>
+                  <strong>{{ nextCountdown.days === 0 ? '今天' : `${nextCountdown.days}天` }}</strong>
                 </button>
               </div>
             </div>
-          </div>
-          <div v-else class="dp-empty">今天还没有安排任务，直接在下方快速添加，或在左侧时间轴拖拽排程。</div>
 
-          <form class="dp-quick-form" @submit.prevent="addTodayTask">
-            <FIcon name="add" :size="12" class="dp-quick-ico" />
-            <input
-              v-model="quickTitle"
-              type="text"
-              class="dp-quick-input"
-              placeholder="添加当天任务，按回车创建…"
-            />
-          </form>
-        </section>
+            <!-- Unified Chronological Stream + Directional Day Carousel + FLIP Reflow -->
+            <Transition :name="daySlideDir === 'next' ? 't-day-next' : 't-day-prev'" mode="out-in">
+              <div :key="selectedDate" class="wd-stream">
+                <TransitionGroup v-if="filteredOccurrences.length" name="t-list" tag="div" class="wd-stream-list">
+                  <div
+                    v-for="occ in filteredOccurrences"
+                    :key="`${occ.task.id}@${occ.date}`"
+                    class="wd-item-block"
+                    :class="{
+                      done: isVisualDone(occ),
+                      dragging: workspaceDrag.active && workspaceDrag.taskId === occ.task.id,
+                    }"
+                    :draggable="!occ.task.repeat"
+                    @dragstart="startTaskDrag(occ.task, $event, 'daily')"
+                    @dragend="endTaskDrag"
+                  >
+                    <div
+                      class="wd-row"
+                      @click="emit('openTask', occ.task.id, occ.date)"
+                      @contextmenu.prevent="openDayTaskMenu(occ.task, occ.date, $event)"
+                    >
+                      <!-- Left Semantic Glyph: transitions.dev Checkbox Check / Event Dot -->
+                      <TaskCheckButton
+                        v-if="occGlyphVariant(occ) !== 'event'"
+                        :checked="isVisualDone(occ)"
+                        :in-progress="occGlyphVariant(occ) === 'progress'"
+                        :accent-color="occGlyphVariant(occ) === 'important' ? '#F59E0B' : occDotColor(occ)"
+                        :size="19"
+                        :label="occ.done ? '取消完成' : '标记完成'"
+                        @toggle="onGlyphClick(occ, $event)"
+                        @contextmenu="onGlyphContext(occ, $event)"
+                      />
 
-        <section v-if="inProgressTasks.length" class="ws-card daily-panel">
-          <header class="dp-head">
-            <h2 class="dp-title">进行中与待复核</h2>
-            <span class="dp-count">{{ inProgressTasks.length }}</span>
-          </header>
-          <div class="dp-list">
-            <div
-              v-for="t in inProgressTasks"
-              :key="t.id"
-              class="dp-focus-row"
-              @click="emit('openTask', t.id)"
-              @contextmenu.prevent="openDayTaskMenu(t, undefined, $event)"
-            >
-              <div class="dp-focus-top">
-                <span class="dp-focus-title-wrap">
-                  <StatusGlyph :status="effectiveWorkspaceStatus(t)" :size="13" />
-                  <span class="dp-focus-title">{{ t.title }}</span>
-                </span>
-                <span class="dp-focus-pct">{{ t.progress }}%</span>
+                      <button
+                        v-else
+                        type="button"
+                        class="wd-event-dot-btn"
+                        title="点击标记完成"
+                        @click.stop="toggleOcc(occ)"
+                      >
+                        <span class="wd-event-dot" :style="{ background: occDotColor(occ) }" />
+                      </button>
+
+                      <!-- Content Column -->
+                      <div class="wd-row-content">
+                        <div class="wd-row-title">
+                          <span class="t-strike-text" :class="{ 'is-struck': isVisualDone(occ) }">
+                            {{ occ.task.title }}
+                          </span>
+                        </div>
+                        <div class="wd-row-meta">
+                          <FIcon v-if="occ.task.repeat" name="flame" :size="11" class="wd-meta-ico" />
+                          <span class="wd-meta-date">{{ shortDateStr(occ.date) }}</span>
+                          <span v-if="occ.task.time" class="wd-meta-time" :class="{ muted: occGlyphVariant(occ) === 'event' }">
+                            {{ occ.task.time }}
+                          </span>
+                          <span
+                            v-if="groupPill(occ.task)"
+                            class="wd-meta-tag"
+                            :style="{ background: groupPill(occ.task)!.bg, color: groupPill(occ.task)!.color }"
+                          >
+                            {{ groupPill(occ.task)!.name }}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- Woday Inline Attached Note / Checklist Branch ('└─ Notes stay with meetings') -->
+                    <div
+                      v-if="attachedNotePreview(occ.task)"
+                      class="wd-note-branch"
+                      @click="emit('openTask', occ.task.id, occ.date)"
+                    >
+                      <span class="wd-branch-line" aria-hidden="true" />
+                      <div class="wd-note-card">
+                        <span class="wd-note-ico">
+                          <FIcon name="note" :size="14" />
+                        </span>
+                        <div class="wd-note-copy">
+                          <div class="wd-note-title">{{ attachedNotePreview(occ.task)!.title }}</div>
+                          <div class="wd-note-sub">{{ attachedNotePreview(occ.task)!.meta }}</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </TransitionGroup>
+
+                <div v-else class="wd-empty-stream">
+                  <p>{{ summaryFilter === 'all' ? '这一天还没有安排事项，直接在下方输入，或从右侧收集箱拖入。' : '当前筛选下没有匹配的事项。' }}</p>
+                </div>
+
+                <!-- Quiet Inline Composer at Bottom of Stream -->
+                <form class="wd-inline-add" @submit.prevent="addTodayTask">
+                  <span class="wd-glyph regular ghost" aria-hidden="true" />
+                  <input
+                    v-model="quickTitle"
+                    type="text"
+                    class="wd-inline-input"
+                    :placeholder="`添加${isViewingToday ? '今日' : '当天'}待办或日程，回车创建…`"
+                  />
+                  <button v-if="quickTitle.trim()" type="submit" class="wd-inline-submit">添加</button>
+                </form>
               </div>
-              <div class="dp-bar">
-                <div class="dp-bar-fill" :style="{ width: `${t.progress}%`, background: groupColorOf(t) }" />
-              </div>
-            </div>
+            </Transition>
           </div>
         </section>
 
-        <section class="ws-card daily-panel compact">
-          <header class="dp-head">
-            <h2 class="dp-title">近期倒数日</h2>
-            <button
-              type="button"
-              class="dp-link-btn"
-              @click="emit('openCountdowns')"
-            >
-              管理 / +
-            </button>
-          </header>
-          <div v-if="upcomingCountdowns.length" class="dp-cd-list">
-            <div
-              v-for="c in upcomingCountdowns"
-              :key="c.key"
-              class="dp-cd-row"
-              @click="c.custom ? emit('openCountdowns') : c.taskId ? emit('openTask', c.taskId, c.date) : selectDate(c.date)"
-            >
-              <span class="dp-cd-name">{{ c.label }}</span>
-              <span class="dp-cd-days">
-                {{ c.mode === 'up' ? (c.days === 0 ? '今日起算' : `已 ${c.days} 天`) : c.days === 0 ? '今天' : `${c.days} 天` }}
-              </span>
-            </div>
-          </div>
-          <div v-else class="dp-empty">暂无近期倒数日，点击右上角添加自定义倒数或纪念日。</div>
-        </section>
+        <!-- Permanent Collapsible Right Companion Sheet: Inbox -->
+        <WorkspaceInboxRail
+          v-if="showRightRail"
+          :selected-date="selectedDate"
+          @open-task="(id) => emit('openTask', id)"
+          @open-group="(gid) => emit('openGroup', gid)"
+          @collapse="emit('toggleInboxRail')"
+        />
       </div>
-    </div>
     </template>
   </div>
 </template>
@@ -422,393 +718,485 @@ onBeforeUnmount(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
 }
 
-.daily-top {
-  flex: none;
-  padding: 4px 6px 0;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.daily-head-row {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.daily-date-title {
-  margin: 2px 0 0;
-  font-family: var(--font-display);
-  font-size: 30px;
-  font-weight: 700;
-  letter-spacing: -0.025em;
-  line-height: 1.15;
-  color: var(--ws-ink);
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-}
-
-.daily-year {
-  font-weight: 400;
-  color: var(--ws-ink-muted);
-}
-
-.daily-nav-pills {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.daily-today-btn {
-  height: 30px;
-  padding: 0 13px;
-  border-radius: 999px;
-  border: 1px solid var(--ws-hairline);
-  background: var(--ws-card-bg);
-  color: var(--ws-ink);
-  font: inherit;
-  font-size: 12.5px;
-  font-weight: 600;
-  box-shadow: var(--ws-shadow-sm);
-  cursor: pointer;
-  transition: background-color 140ms ease, transform 120ms var(--ws-ease-out);
-}
-
-.daily-today-btn:hover {
-  background: var(--ws-card-hover);
-}
-
-.daily-today-btn:active {
-  transform: scale(0.97);
-}
-
-.week-strip {
-  display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 6px;
-  padding: 6px;
-  border-radius: 14px;
-  background: var(--ws-sidebar-bg);
-  border: 1px solid var(--ws-hairline);
-}
-
-.week-day-btn {
-  border: 0;
-  background: transparent;
-  padding: 6px 4px;
-  border-radius: 10px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  cursor: pointer;
-  color: var(--ws-ink-secondary);
-  transition: background-color 140ms ease, color 140ms ease;
-}
-
-.week-day-btn:hover:not(.active) {
-  background: var(--ws-pill-bg);
-  color: var(--ws-ink);
-}
-
-.wd-name {
-  font-size: 11px;
-  font-weight: 500;
-}
-
-.wd-num {
-  width: 30px;
-  height: 30px;
-  border-radius: 999px;
-  display: grid;
-  place-items: center;
-  font-size: 13.5px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  transition: background-color 180ms var(--ws-ease-out), color 180ms ease, transform 160ms var(--ws-ease-spring);
-}
-
-.week-day-btn.today:not(.active) .wd-num {
-  box-shadow: inset 0 0 0 1.4px var(--ws-hairline-strong);
-  color: var(--ws-ink);
-}
-
-.week-day-btn.active .wd-num {
-  background: var(--ws-ink);
-  color: var(--ws-ink-inverse);
-  transform: scale(1.04);
-}
-
-.wd-dot {
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: transparent;
-  transition: background-color 160ms ease;
-}
-
-.wd-dot.on {
-  background: var(--ws-ink-muted);
-}
-
-.week-day-btn.active .wd-dot.on {
-  background: var(--ws-ink);
-}
-
-.daily-grid {
+.wd-dual-layout {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   display: flex;
-  gap: 12px;
+  gap: 10px;
 }
 
-.daily-timeline-card {
+/* Main Floating White Sheet ('Today') */
+.wd-today-sheet {
   flex: 1;
   min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
-  padding: 2px 4px;
-}
-
-.daily-timeline-card :deep(.day-head) {
-  padding: 6px 12px 4px;
-  min-height: 30px;
-}
-
-.daily-timeline-card :deep(.day-title) {
-  display: none;
-}
-
-.daily-timeline-card :deep(.day-head-main) {
-  gap: 0;
-}
-
-.daily-side {
-  width: clamp(280px, 31%, 352px);
-  flex: none;
-  min-height: 0;
+  background: var(--ws-card-bg);
+  border: 1px solid var(--ws-hairline);
+  border-radius: 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
   overflow-y: auto;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.wd-today-sheet.drop-active {
+  border-color: color-mix(in srgb, #e84c3d 55%, var(--ws-hairline));
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, #e84c3d 25%, transparent);
+}
+
+.wd-today-inner {
+  width: 100%;
+  max-width: 780px;
+  margin: 0 auto;
+  padding: 26px 32px 44px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding-right: 2px;
+  gap: 18px;
 }
 
-.dp-pane-switch {
-  position: relative;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 3px;
-  padding: 3px;
-  border-radius: 12px;
-  background: var(--ws-stone-pill);
+/* Header */
+.wd-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
 }
 
-.dp-sw-pill {
-  border-radius: 9px;
-  background: var(--ws-card-bg);
-  box-shadow: var(--ws-shadow-sm);
+.wd-head-left {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
-.dp-sw-btn {
-  position: relative;
-  z-index: 1;
-  height: 30px;
-  border: 0;
-  border-radius: 9px;
-  background: transparent;
+.wd-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 30px;
+  font-weight: 780;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  color: var(--ws-ink);
+}
+
+.wd-date-sub {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ws-ink-muted);
+}
+
+.wd-head-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.wd-today-pill {
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--ws-hairline);
+  background: var(--ws-card-subtle);
   color: var(--ws-ink-secondary);
   font: inherit;
-  font-size: 13px;
-  font-weight: 550;
+  font-size: 12px;
+  font-weight: 600;
   cursor: pointer;
-  transition: color 140ms ease;
+  transition: background-color 140ms ease, color 140ms ease;
 }
 
-.dp-sw-btn.active {
+.wd-today-pill:hover {
+  background: var(--ws-pill-hover);
   color: var(--ws-ink);
-  font-weight: 650;
 }
 
-.daily-grid.stacked {
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.daily-grid.stacked .daily-timeline-card {
-  min-height: 0;
-  flex: 1;
-}
-
-.daily-grid.stacked .daily-side {
-  width: 100%;
-  min-height: 0;
-  overflow-y: auto;
-  flex: 1;
-  padding-right: 0;
-}
-
-.ws-daily.phone .daily-top {
-  padding: 2px 2px 0;
-  gap: 8px;
-}
-
-.ws-daily.phone .daily-date-title {
-  font-size: 24px;
-}
-
-.ws-daily.phone .week-strip {
-  padding: 4px;
-  gap: 3px;
-}
-
-.ws-daily.phone .week-day-btn {
-  padding: 4px 2px;
-}
-
-.ws-daily.phone .daily-grid.stacked .daily-side {
-  padding-bottom: calc(92px + env(safe-area-inset-bottom));
-}
-
-.ws-daily.phone .daily-grid.stacked .daily-timeline-card {
-  margin-bottom: calc(74px + env(safe-area-inset-bottom));
-}
-
-.dp-more-btn {
-  width: 26px;
-  height: 26px;
+.wd-nav-circle {
+  width: 28px;
+  height: 28px;
   padding: 0;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--ws-ink-muted);
+  border-radius: 999px;
+  border: 1px solid var(--ws-hairline);
+  background: var(--ws-card-subtle);
+  color: var(--ws-ink-secondary);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease;
 }
 
-.dp-more-btn:active {
-  background: var(--ws-stone-pill);
+.wd-nav-circle:hover {
+  background: var(--ws-pill-hover);
   color: var(--ws-ink);
 }
 
-.daily-panel {
-  padding: 14px;
+/* 11-Day Open Borderless Date Strip with Liquid Sliding Pill */
+.wd-date-strip {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(11, minmax(0, 1fr));
+  gap: 4px;
+  align-items: center;
+}
+
+.wd-day-slide-pill {
+  border-radius: 12px;
+  background: var(--ws-card-bg);
+  border: 1px solid var(--ws-hairline-strong);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.055);
+  z-index: 0;
+}
+
+.wd-day-cell {
+  position: relative;
+  z-index: 1;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  padding: 8px 2px 6px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-}
-
-.dp-head {
-  display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 2px;
+  cursor: pointer;
+  color: var(--ws-ink-secondary);
+  font: inherit;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, transform 120ms ease;
 }
 
-.dp-title {
-  margin: 0;
-  font-size: 13.5px;
-  font-weight: 650;
+.wd-day-cell:hover:not(.selected) {
+  background: var(--ws-card-subtle);
   color: var(--ws-ink);
 }
 
-.dp-count {
-  font-size: 12px;
-  color: var(--ws-ink-muted);
+.wd-day-cell.selected {
+  color: var(--ws-ink);
+}
+
+.wd-today-pill.away {
+  background: color-mix(in srgb, #e84c3d 10%, var(--ws-card-subtle));
+  border-color: color-mix(in srgb, #e84c3d 28%, transparent);
+  color: #d93f31;
+}
+
+.wd-stream-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.wd-item-block.dragging {
+  opacity: 0.42;
+  transform: scale(0.985);
+}
+
+.wd-day-cell.drag-over {
+  border-color: #e84c3d;
+  background: color-mix(in srgb, #e84c3d 10%, transparent);
+  transform: scale(1.04);
+}
+
+.wd-day-num {
+  font-size: 16px;
+  font-weight: 660;
+  line-height: 1.2;
   font-variant-numeric: tabular-nums;
 }
 
-.dp-link-btn {
-  border: 0;
-  background: transparent;
-  color: var(--ws-ink-secondary);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
+.wd-day-cell.today .wd-day-num,
+.wd-day-cell.selected.today .wd-day-num {
+  color: #e84c3d;
 }
 
-.dp-link-btn:hover {
+.wd-day-wk {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ws-ink-muted);
+}
+
+.wd-day-cell.selected.today .wd-day-wk {
+  color: color-mix(in srgb, #e84c3d 82%, var(--ws-ink-muted));
+}
+
+.wd-day-dots {
+  height: 5px;
+  margin-top: 2px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.wd-day-dots i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+}
+
+/* Natural-Language Daily Summary Card */
+.wd-summary-box {
+  padding: 13px 16px;
+  border-radius: 13px;
+  border: 1px solid var(--ws-hairline);
+  background: color-mix(in srgb, var(--ws-card-subtle) 55%, var(--ws-card-bg));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.wd-summary-sentence {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  font-size: 13.5px;
+  font-weight: 540;
   color: var(--ws-ink);
 }
 
-.dp-list {
+.wd-sum-conj {
+  color: var(--ws-ink-secondary);
+}
+
+.wd-sum-chip {
+  height: 26px;
+  padding: 0 9px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 640;
+  cursor: pointer;
+  transition: transform 120ms ease, border-color 140ms ease, filter 140ms ease;
+}
+
+.wd-sum-chip:active {
+  transform: scale(0.96);
+}
+
+.wd-sum-chip.rose {
+  background: color-mix(in srgb, #e84c3d 13%, transparent);
+  color: #d43d30;
+}
+
+.wd-sum-chip.slate {
+  background: color-mix(in srgb, var(--ws-ink) 8%, transparent);
+  color: var(--ws-ink-secondary);
+}
+
+.wd-sum-chip.amber {
+  background: color-mix(in srgb, #e59b28 16%, transparent);
+  color: #b8730c;
+}
+
+.wd-sum-chip.active {
+  border-color: currentColor;
+}
+
+.wd-sum-clear {
+  border: 0;
+  background: transparent;
+  color: var(--ws-ink-muted);
+  font: inherit;
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.wd-summary-whispers {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.wd-cd-whisper {
+  border: 0;
+  border-radius: 999px;
+  padding: 3px 9px;
+  background: var(--ws-card-bg);
+  border: 1px solid var(--ws-hairline);
+  color: var(--ws-ink-secondary);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.wd-cd-whisper.sub-due {
+  background: color-mix(in srgb, #e85d2a 11%, var(--ws-card-bg));
+  border-color: color-mix(in srgb, #e85d2a 24%, transparent);
+  color: #d4451a;
+}
+
+.wd-cd-whisper.sub-due strong {
+  color: #d4451a;
+}
+
+.wd-cd-whisper strong {
+  color: var(--ws-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Unified Chronological Stream */
+.wd-stream {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
-.dp-item {
+.wd-item-block {
+  display: flex;
+  flex-direction: column;
+}
+
+.wd-row {
   display: flex;
   align-items: flex-start;
-  gap: 9px;
-  padding: 7px 8px;
-  border-radius: 10px;
+  gap: 12px;
+  padding: 9px 10px;
+  border-radius: 11px;
   cursor: pointer;
   transition: background-color 130ms ease;
 }
 
-.dp-item:hover {
+.wd-row:hover {
   background: var(--ws-card-subtle);
 }
 
-.dp-item.done .dp-item-title {
-  text-decoration: line-through;
+.wd-item-block.done .wd-row-title {
   color: var(--ws-ink-muted);
+  text-decoration: line-through;
 }
 
-.dp-item-body {
+.wd-row-content {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
 
-.dp-item-title {
-  font-size: 13px;
-  font-weight: 500;
+.wd-row-title {
+  font-size: 14.5px;
+  font-weight: 560;
+  line-height: 1.35;
   color: var(--ws-ink);
   word-break: break-word;
 }
 
-.dp-item-meta {
+.wd-row-meta {
   display: flex;
+  align-items: center;
   flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 3px;
+  gap: 6px;
+  font-size: 12px;
 }
 
-.dp-chip {
-  font-size: 11px;
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: var(--ws-pill-bg);
-  color: var(--ws-ink-secondary);
+.wd-meta-ico {
+  color: var(--ws-ink-muted);
+}
+
+.wd-meta-date {
+  color: var(--ws-ink-muted);
+}
+
+.wd-meta-time {
+  color: #e25343;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 
-.dp-chip.in_progress {
-  background: var(--ws-pill-progress-bg);
-  color: var(--ws-pill-progress-ink);
+.wd-meta-time.muted {
+  color: var(--ws-ink-muted);
+  font-weight: 500;
 }
 
-.dp-chip.in_review {
-  background: var(--ws-pill-review-bg);
-  color: var(--ws-pill-review-ink);
+.wd-meta-tag {
+  padding: 1px 8px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 620;
+  line-height: 1.45;
 }
 
-.dp-glyph-btn {
-  width: 20px;
+/* Woday Semantic Status Glyphs */
+.wd-glyph {
+  width: 19px;
+  height: 19px;
+  margin-top: 1px;
+  padding: 0;
+  flex: none;
+  border-radius: 6px;
+  border: 1.6px solid color-mix(in srgb, var(--ws-ink-muted) 48%, transparent);
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 120ms ease, border-color 140ms ease, background-color 140ms ease;
+}
+
+.wd-glyph:active {
+  transform: scale(0.9);
+}
+
+.wd-glyph.ghost {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.wd-glyph.important {
+  border-color: #e59b28;
+  border-width: 1.85px;
+}
+
+.wd-glyph.progress {
+  border-radius: 999px;
+  border-color: #e25343;
+  border-width: 1.7px;
+  overflow: hidden;
+}
+
+.wd-half {
+  width: 52%;
+  height: 100%;
+  background: var(--ws-ink);
+  margin-right: auto;
+  border-radius: 999px 0 0 999px;
+}
+
+.wd-glyph.done {
+  border-radius: 999px;
+  border-color: var(--ws-ink);
+  background: var(--ws-ink);
+  color: var(--ws-ink-inverse);
+}
+
+.wd-glyph.done svg {
+  width: 11px;
+  height: 11px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.wd-event-dot-btn {
+  width: 19px;
   height: 20px;
   padding: 0;
-  margin-top: 1px;
   border: 0;
   background: transparent;
   display: inline-flex;
@@ -818,135 +1206,150 @@ onBeforeUnmount(() => {
   flex: none;
 }
 
-.dp-item-trail {
-  margin-top: 2px;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
+.wd-event-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  transition: transform 120ms ease;
+}
+
+.wd-event-dot-btn:hover .wd-event-dot {
+  transform: scale(1.25);
+}
+
+/* Inline Attached Note Branch ('Notes stay with meetings') */
+.wd-note-branch {
+  display: flex;
+  align-items: flex-start;
+  padding: 0 10px 6px 19px;
+  cursor: pointer;
+}
+
+.wd-branch-line {
+  width: 16px;
+  height: 24px;
+  border-left: 1.3px solid var(--ws-hairline-strong);
+  border-bottom: 1.3px solid var(--ws-hairline-strong);
+  border-bottom-left-radius: 8px;
+  margin-right: 8px;
   flex: none;
 }
 
-.dp-focus-title-wrap {
+.wd-note-card {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 10px;
+  max-width: min(360px, 100%);
+  padding: 8px 14px 8px 10px;
+  border-radius: 11px;
+  border: 1px solid var(--ws-hairline);
+  background: var(--ws-card-bg);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03);
+  transition: border-color 140ms ease, box-shadow 140ms ease, transform 120ms ease;
+}
+
+.wd-note-branch:hover .wd-note-card {
+  border-color: var(--ws-hairline-strong);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+  transform: translateY(-1px);
+}
+
+.wd-note-ico {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--ws-card-subtle);
+  color: var(--ws-ink-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+
+.wd-note-copy {
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
 }
 
-.dp-empty {
-  font-size: 12.5px;
-  line-height: 1.5;
+.wd-note-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ws-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wd-note-sub {
+  font-size: 11.5px;
   color: var(--ws-ink-muted);
-  padding: 6px 2px;
 }
 
-.dp-quick-form {
+.wd-empty-stream {
+  padding: 20px 10px;
+  color: var(--ws-ink-muted);
+  font-size: 13.5px;
+}
+
+.wd-empty-stream p {
+  margin: 0;
+}
+
+.wd-inline-add {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 11px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  height: 34px;
-  padding: 0 10px;
-  border-radius: 10px;
+  gap: 12px;
+  transition: background-color 140ms ease;
+}
+
+.wd-inline-add:focus-within {
   background: var(--ws-card-subtle);
-  border: 1px solid transparent;
-  transition: border-color 140ms ease, background-color 140ms ease;
 }
 
-.dp-quick-form:focus-within {
-  background: var(--ws-card-bg);
-  border-color: var(--ws-hairline-strong);
-}
-
-.dp-quick-ico {
-  color: var(--ws-ink-muted);
-  flex: none;
-}
-
-.dp-quick-input {
+.wd-inline-input {
   flex: 1;
   min-width: 0;
   border: 0;
   background: transparent;
   color: var(--ws-ink);
-  font-size: 12.5px;
+  font: inherit;
+  font-size: 14px;
   outline: none;
 }
 
-.dp-focus-row {
-  padding: 7px 8px;
-  border-radius: 10px;
-  cursor: pointer;
-  transition: background-color 130ms ease;
+.wd-inline-input::placeholder {
+  color: var(--ws-ink-muted);
 }
 
-.dp-focus-row:hover {
-  background: var(--ws-card-subtle);
-}
-
-.dp-focus-top {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  font-size: 12.5px;
-  font-weight: 500;
-  margin-bottom: 5px;
-}
-
-.dp-focus-title {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.dp-focus-pct {
-  font-variant-numeric: tabular-nums;
-  color: var(--ws-ink-secondary);
-}
-
-.dp-bar {
-  height: 4px;
+.wd-inline-submit {
+  height: 26px;
+  padding: 0 12px;
+  border: 0;
   border-radius: 999px;
-  background: var(--ws-pill-bg);
-  overflow: hidden;
-}
-
-.dp-bar-fill {
-  height: 100%;
-  border-radius: 999px;
-  transition: width 240ms var(--ws-ease-out);
-}
-
-.dp-cd-list {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.dp-cd-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 5px 8px;
-  border-radius: 8px;
-  font-size: 12.5px;
+  background: var(--ws-ink);
+  color: var(--ws-ink-inverse);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 640;
   cursor: pointer;
 }
 
-.dp-cd-row:hover {
-  background: var(--ws-card-subtle);
-}
+@media (max-width: 900px) {
+  .wd-today-inner {
+    padding: 18px 18px 32px;
+  }
 
-.dp-cd-name {
-  color: var(--ws-ink);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+  .wd-date-strip {
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+  }
 
-.dp-cd-days {
-  color: var(--ws-ink-secondary);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  flex: none;
+  .wd-date-strip .wd-day-cell:nth-child(n + 8) {
+    display: none;
+  }
 }
 </style>

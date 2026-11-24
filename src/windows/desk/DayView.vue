@@ -27,6 +27,7 @@ import { isDark } from '@/composables/theme';
 import { now } from '@/composables/now';
 import { chipMenu, removeTask } from './menus';
 import { openEditor, page, setPendingDraft, shownTasks, spotlightStateOf, ui, updatePendingDraftFromTimeline } from './state';
+import { dropTaskToDate, getDraggedTaskId, hasTaskDragPayload, workspaceDrag } from '../workspace/workspaceDrag';
 
 const HOUR_HEIGHT = 68;
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
@@ -1019,6 +1020,51 @@ onBeforeUnmount(() => {
   clearTimeout(dayTransitionTimer);
   if (nowTimer) clearInterval(nowTimer);
 });
+
+// External HTML5 task drop onto DayView timeline or all-day header
+const extDropMin = ref<number | null>(null);
+const extDropAllDay = ref(false);
+
+function onTrackExtDragOver(e: DragEvent) {
+  if (!canEdit() || !hasTaskDragPayload(e)) return;
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+  const raw = pointerMinFromTrack(e.clientY);
+  extDropMin.value = clampMinutes(snapMinutes(raw), 0, DAY_MINUTES - DEFAULT_DURATION);
+}
+
+function onTrackExtDragLeave(e: DragEvent) {
+  const cur = e.currentTarget as HTMLElement | null;
+  if (cur && e.relatedTarget instanceof Node && cur.contains(e.relatedTarget)) return;
+  extDropMin.value = null;
+}
+
+function onTrackExtDrop(e: DragEvent) {
+  const startMin = extDropMin.value;
+  extDropMin.value = null;
+  if (!canEdit()) return;
+  const taskId = getDraggedTaskId(e);
+  if (!taskId) return;
+  e.preventDefault();
+  const s = startMin ?? clampMinutes(snapMinutes(pointerMinFromTrack(e.clientY)), 0, DAY_MINUTES - DEFAULT_DURATION);
+  void dropTaskToDate(taskId, ui.selected, formatMinToHHMM(s), DEFAULT_DURATION);
+}
+
+function onHeadExtDragOver(e: DragEvent) {
+  if (!canEdit() || !hasTaskDragPayload(e)) return;
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+  extDropAllDay.value = true;
+}
+
+function onHeadExtDrop(e: DragEvent) {
+  extDropAllDay.value = false;
+  if (!canEdit()) return;
+  const taskId = getDraggedTaskId(e);
+  if (!taskId) return;
+  e.preventDefault();
+  void dropTaskToDate(taskId, ui.selected);
+}
 </script>
 
 <template>
@@ -1035,7 +1081,13 @@ onBeforeUnmount(() => {
     tabindex="-1"
     @keydown="onViewKeyDown"
   >
-    <header class="day-head">
+    <header
+      class="day-head"
+      :class="{ 'ext-drop-active': extDropAllDay }"
+      @dragover="onHeadExtDragOver"
+      @dragleave="extDropAllDay = false"
+      @drop="onHeadExtDrop"
+    >
       <div class="day-head-main">
         <h2 class="day-title">{{ formatFriendly(ui.selected, now) }}</h2>
         <span class="day-count">{{ totalCount }} 项事项</span>
@@ -1112,7 +1164,23 @@ onBeforeUnmount(() => {
           :style="{ height: `${TOTAL_HEIGHT}px` }"
           @pointerdown="onTrackPointerDown"
           @dblclick="onTrackDblClick"
+          @dragover="onTrackExtDragOver"
+          @dragleave="onTrackExtDragLeave"
+          @drop="onTrackExtDrop"
         >
+          <div
+            v-if="extDropMin !== null"
+            class="ext-drop-ghost"
+            :style="{
+              top: `${(extDropMin / 60) * HOUR_HEIGHT}px`,
+              height: `${(DEFAULT_DURATION / 60) * HOUR_HEIGHT}px`,
+              '--ghost-color': workspaceDrag.color || '#3b82f6',
+            }"
+            aria-hidden="true"
+          >
+            <span class="edg-title">{{ workspaceDrag.title || '松手安排到此时间' }}</span>
+            <span class="edg-time">{{ formatRangeLabel(extDropMin, Math.min(DAY_MINUTES, extDropMin + DEFAULT_DURATION), false) }}</span>
+          </div>
           <div v-for="h in HOURS" :key="`hl-${h}`" class="hour-line" :style="{ top: `${h * HOUR_HEIGHT}px` }" />
           <div class="hour-line" :style="{ top: `${TOTAL_HEIGHT}px` }" />
 
@@ -1953,6 +2021,49 @@ onBeforeUnmount(() => {
   .hour-label {
     padding-right: 8px;
   }
+}
+
+.day-head.ext-drop-active {
+  background: color-mix(in srgb, #e85d2a 10%, transparent);
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, #e85d2a 40%, transparent);
+}
+
+.ext-drop-ghost {
+  position: absolute;
+  left: 6px;
+  right: 8px;
+  z-index: 35;
+  border-radius: 10px;
+  padding: 6px 10px;
+  background: color-mix(in srgb, var(--ghost-color, #3b82f6) 24%, var(--ws-card-bg, #ffffff));
+  border: 1.5px dashed color-mix(in srgb, var(--ghost-color, #3b82f6) 72%, transparent);
+  color: color-mix(in srgb, var(--ghost-color, #3b82f6) 76%, #111111);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  pointer-events: none;
+  box-shadow: 0 8px 22px color-mix(in srgb, var(--ghost-color, #3b82f6) 20%, transparent);
+  transition: top 90ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.day-view.dark .ext-drop-ghost {
+  background: color-mix(in srgb, var(--ghost-color, #3b82f6) 30%, #181a20);
+  color: #ffffff;
+}
+
+.edg-title {
+  font-size: 12.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.edg-time {
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.8;
+  font-variant-numeric: tabular-nums;
 }
 
 @media (prefers-reduced-motion: reduce) {

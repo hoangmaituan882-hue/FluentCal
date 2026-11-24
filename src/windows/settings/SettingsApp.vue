@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, provide, ref, watch, type Component } from 'vue';
 import { FNavView } from '@/fluent';
-import { call, currentWindow, on } from '@/api';
+import { call, currentWindow, isMobile, on } from '@/api';
 import { initStore, storeState } from '@/stores/doc';
 import { startThemeSync } from '@/composables/theme';
 import GeneralPage from './GeneralPage.vue';
@@ -11,6 +11,7 @@ import GanttPage from './GanttPage.vue';
 import RemindersPage from './RemindersPage.vue';
 import DataPage from './DataPage.vue';
 import SyncPage from './SyncPage.vue';
+import MobileSync from '../mobile/MobileSync.vue';
 import WebPage from './WebPage.vue';
 import AboutPage from './AboutPage.vue';
 import '../window-shell.css';
@@ -21,16 +22,18 @@ defineEmits<{ close: [] }>();
 
 startThemeSync();
 
-const items = [
-  { key: 'general', label: '常规', icon: 'settings' },
-  { key: 'appearance', label: '外观', icon: 'palette' },
-  { key: 'calendar', label: '日历', icon: 'calendar' },
-  { key: 'gantt', label: '甘特图', icon: 'gantt' },
-  { key: 'reminders', label: '提醒', icon: 'alarm' },
-  { key: 'data', label: '数据', icon: 'data' },
-  { key: 'sync', label: '同步', icon: 'cloud' },
-  { key: 'web', label: '网页查看', icon: 'globe' },
-];
+const items = computed(() =>
+  [
+    ...(isMobile ? [] : [{ key: 'general', label: '常规', icon: 'settings' }]),
+    { key: 'sync', label: '同步', icon: 'cloud' },
+    { key: 'appearance', label: '外观', icon: 'palette' },
+    { key: 'calendar', label: '日历', icon: 'calendar' },
+    { key: 'gantt', label: '甘特图', icon: 'gantt' },
+    { key: 'reminders', label: '提醒', icon: 'alarm' },
+    { key: 'data', label: '数据', icon: 'data' },
+    ...(isMobile ? [] : [{ key: 'web', label: '网页查看', icon: 'globe' }]),
+  ],
+);
 const footer = [{ key: 'about', label: '关于', icon: 'info' }];
 const pages: Record<string, Component> = {
   general: GeneralPage,
@@ -39,11 +42,11 @@ const pages: Record<string, Component> = {
   gantt: GanttPage,
   reminders: RemindersPage,
   data: DataPage,
-  sync: SyncPage,
+  sync: isMobile ? MobileSync : SyncPage,
   web: WebPage,
   about: AboutPage,
 };
-const pageKey = ref('general');
+const pageKey = ref(isMobile ? 'sync' : 'general');
 const page = computed(() => pages[pageKey.value] ?? GeneralPage);
 /** Lets a page send the user to another one ("set the data folder on the Data page"). */
 provide('settingsNav', (key: string) => {

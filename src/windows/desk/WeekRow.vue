@@ -12,6 +12,7 @@ import { notify, ui } from './state';
 import type { CellInfo } from './types';
 import TaskChip from './TaskChip.vue';
 import { parseRgba } from '@/lib/rgba';
+import { dropTaskToDate, getDraggedTaskId, hasTaskDragPayload } from '../workspace/workspaceDrag';
 
 const props = defineProps<{
   cells: CellInfo[];
@@ -107,6 +108,28 @@ function onCellDblClick(date: ISODate) {
   if (!storeState.readOnly) ui.quickAdd = { date };
 }
 
+const extDropDate = ref<ISODate | ''>('');
+
+function onCellExtDragOver(date: ISODate, e: DragEvent) {
+  if (storeState.readOnly || !hasTaskDragPayload(e)) return;
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+  extDropDate.value = date;
+}
+
+function onCellExtDragLeave(date: ISODate) {
+  if (extDropDate.value === date) extDropDate.value = '';
+}
+
+function onCellExtDrop(date: ISODate, e: DragEvent) {
+  extDropDate.value = '';
+  if (storeState.readOnly) return;
+  const taskId = getDraggedTaskId(e);
+  if (!taskId) return;
+  e.preventDefault();
+  void dropTaskToDate(taskId, date);
+}
+
 let cellTouchTimer: ReturnType<typeof setTimeout> | undefined;
 let cellTouchOrigin: { x: number; y: number } | null = null;
 function onCellPointerDown(date: ISODate, e: PointerEvent) {
@@ -148,7 +171,7 @@ function clearCellTouch() {
           :tabindex="ui.selected === c.date ? 0 : -1"
           :aria-selected="ui.selected === c.date"
           :aria-describedby="`desc-${c.date}`"
-          :class="{ rest: c.rest, today: c.today, 'today-fill': c.today && (parseRgba(doc.settings.desk.todayFillColor)?.[3] ?? 0) > 0, dim: c.dim, marked: !!c.mark, drop: dropDate === c.date, flash: ui.flash && c.date >= ui.flash && c.date <= ui.flashEnd }"
+          :class="{ rest: c.rest, today: c.today, 'today-fill': c.today && (parseRgba(doc.settings.desk.todayFillColor)?.[3] ?? 0) > 0, dim: c.dim, marked: !!c.mark, drop: dropDate === c.date || extDropDate === c.date, flash: ui.flash && c.date >= ui.flash && c.date <= ui.flashEnd }"
           :style="c.mark ? { '--mark': c.mark } : undefined"
           @click="ui.selected = c.date"
           @dblclick="onCellDblClick(c.date)"
@@ -157,6 +180,9 @@ function clearCellTouch() {
           @pointermove="onCellPointerMove"
           @pointerup="clearCellTouch"
           @pointercancel="clearCellTouch"
+          @dragover="onCellExtDragOver(c.date, $event)"
+          @dragleave="onCellExtDragLeave(c.date)"
+          @drop="onCellExtDrop(c.date, $event)"
         >
           <div class="head" :style="{ height: `${headH}px` }" v-tip="{ text: c.tip, placement: 'top' }">
             <span class="num">{{ c.label }}</span>

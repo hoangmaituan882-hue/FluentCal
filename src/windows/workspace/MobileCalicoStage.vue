@@ -127,7 +127,7 @@ const occurrencesByDay = computed<Record<ISODate, Occurrence[]>>(() => {
   const [rangeStart, rangeEnd] = visibleRange.value;
   const map: Record<ISODate, Occurrence[]> = {};
   for (const t of taskList.value) {
-    if (t.countdownOnly || flexKind(t)) continue;
+    if (t.countdownOnly || t.subscriptionOnly || flexKind(t)) continue;
     const occs = occurrences(t, rangeStart, rangeEnd);
     for (const o of occs) {
       let cur = o.start < rangeStart ? rangeStart : o.start;

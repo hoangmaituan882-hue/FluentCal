@@ -61,6 +61,7 @@ const KIND_LABELS: Record<WorkspacePageKind, string> = {
   calendar: '日历视图',
   inbox: '收集箱',
   tasks: '待办清单',
+  subscriptions: '订阅日历',
   countdowns: '倒数日',
   gantt: '项目甘特',
   area: '分组空间',
@@ -132,6 +133,7 @@ function onViewSwitchClick(e: MouseEvent) {
     { label: '时间轴与多日视图', icon: 'calendar', radio: true, checked: props.activeKind === 'calendar', action: () => emit('openTab', 'calendar') },
     { label: '收集箱', icon: 'flag', radio: true, checked: props.activeKind === 'inbox', action: () => emit('openTab', 'inbox') },
     { label: '全部待办', icon: 'checklist', radio: true, checked: props.activeKind === 'tasks', action: () => emit('openTab', 'tasks') },
+    { label: '订阅日历', icon: 'subscription', radio: true, checked: props.activeKind === 'subscriptions', action: () => emit('openTab', 'subscriptions') },
     { label: '倒数日', icon: 'timer', radio: true, checked: props.activeKind === 'countdowns', action: () => emit('openTab', 'countdowns') },
     { label: '项目甘特', icon: 'gantt', radio: true, checked: props.activeKind === 'gantt', action: () => emit('openTab', 'gantt') },
     ...(groupList.value.length

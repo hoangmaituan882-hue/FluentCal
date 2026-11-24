@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { getGroupIcon } from '@/lib/groupIcons';
+import { SOLAR_GROUP_ICONS } from './solarIcons';
 
 const props = withDefaults(
   defineProps<{
@@ -11,13 +12,24 @@ const props = withDefaults(
   { size: 15 },
 );
 
+const solarBody = computed(() => (props.icon ? SOLAR_GROUP_ICONS[props.icon] : undefined));
 const def = computed(() => getGroupIcon(props.icon));
 const dotSize = computed(() => Math.max(6, Math.round(props.size * 0.54)));
 </script>
 
 <template>
   <svg
-    v-if="def"
+    v-if="solarBody"
+    class="f-group-svg"
+    :width="size"
+    :height="size"
+    viewBox="0 0 24 24"
+    fill="none"
+    aria-hidden="true"
+    v-html="solarBody"
+  />
+  <svg
+    v-else-if="def"
     class="f-group-svg"
     :width="size"
     :height="size"
@@ -44,6 +56,7 @@ const dotSize = computed(() => Math.max(6, Math.round(props.size * 0.54)));
   display: inline-block;
   flex: none;
   color: inherit;
+  vertical-align: middle;
 }
 
 .f-group-dot {

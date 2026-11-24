@@ -36,9 +36,11 @@ import {
 import { cancelTaskPreview, hideTaskPreview, showTaskPreview } from './useTaskHoverPreview';
 import { classifyTaskBucket, type TaskBucketKey } from './workspaceModel';
 import { openTaskContextMenu } from './workspaceMenus';
+import { endTaskDrag, startTaskDrag } from './workspaceDrag';
 
 const GROUP_BY_KEY = 'fluentcal.workspace.tasksGroupBy';
 const SHOW_EMPTY_KEY = 'fluentcal.workspace.showEmptyStatuses';
+const VIEW_MODE_KEY = 'fluentcal.workspace.tasksViewMode';
 
 const props = defineProps<{
   searchQuery: string;
@@ -52,6 +54,112 @@ const emit = defineEmits<{
 }>();
 
 const { isPhone } = useViewport();
+
+const viewMode = ref<'list' | 'board'>(
+  (() => {
+    try {
+      return localStorage.getItem(VIEW_MODE_KEY) === 'board' ? 'board' : 'list';
+    } catch {
+      return 'list';
+    }
+  })(),
+);
+watch(viewMode, (v) => {
+  try {
+    localStorage.setItem(VIEW_MODE_KEY, v);
+  } catch {
+    /* ignore */
+  }
+});
+
+const filtersExpanded = ref(false);
+const hasActiveFilters = computed(() => filterTokens.value.length > 0 || props.searchQuery.trim().length > 0);
+const showFilterBar = computed(() => isPhone.value || filtersExpanded.value || hasActiveFilters.value);
+
+interface KanbanCol {
+  key: 'todo' | 'in_progress' | 'done';
+  title: string;
+  targetStatus: TaskStatus;
+  tasks: Task[];
+}
+
+const kanbanColumns = computed<KanbanCol[]>(() => {
+  const todo: Task[] = [];
+  const doing: Task[] = [];
+  const done: Task[] = [];
+  for (const t of filteredTasks.value) {
+    const st = effectiveWorkspaceStatus(t);
+    if (st === 'done') done.push(t);
+    else if (st === 'in_progress' || st === 'in_review') doing.push(t);
+    else todo.push(t);
+  }
+  const sortFn = (a: Task, b: Task) => {
+    const pa = PRIORITY_RANK[effectivePriority(a)];
+    const pb = PRIORITY_RANK[effectivePriority(b)];
+    if (pa !== pb) return pa - pb;
+    return (b.updatedAt || 0) - (a.updatedAt || 0);
+  };
+  todo.sort(sortFn);
+  doing.sort(sortFn);
+  done.sort(sortFn);
+  return [
+    { key: 'todo', title: '待开始', targetStatus: 'todo', tasks: todo },
+    { key: 'in_progress', title: '进行中', targetStatus: 'in_progress', tasks: doing },
+    { key: 'done', title: '已完成', targetStatus: 'done', tasks: done },
+  ];
+});
+
+const dragOverCol = ref<string | null>(null);
+
+function onKanbanDragStart(t: Task, e: DragEvent) {
+  draggingTaskId.value = t.id;
+  startTaskDrag(t, e, 'tasks-kanban');
+}
+
+function onKanbanDragEnd() {
+  draggingTaskId.value = null;
+  dragOverCol.value = null;
+  endTaskDrag();
+}
+
+function onKanbanDrop(col: KanbanCol) {
+  const id = draggingTaskId.value;
+  draggingTaskId.value = null;
+  dragOverCol.value = null;
+  if (!id) return;
+  const t = doc.tasks[id];
+  if (!t) return;
+  void saveTask(applyTaskStatus(t, col.targetStatus));
+}
+
+function kanbanGlyph(t: Task): 'done' | 'progress' | 'important' | 'regular' {
+  const st = effectiveWorkspaceStatus(t);
+  if (st === 'done') return 'done';
+  if (st === 'in_progress' || st === 'in_review') return 'progress';
+  const p = effectivePriority(t);
+  if (p === 'urgent' || p === 'high') return 'important';
+  return 'regular';
+}
+
+function kanbanGroupPill(groupId?: string) {
+  if (!groupId || !doc.groups[groupId]) return null;
+  const g = doc.groups[groupId];
+  const hex = taskColor(g.color, isDark.value).bar;
+  return {
+    name: g.name,
+    color: hex,
+    bg: `color-mix(in srgb, ${hex} 13%, transparent)`,
+  };
+}
+
+function openGroupByMenu(e: MouseEvent) {
+  const anchor = e.currentTarget as HTMLElement;
+  const items: MenuItem[] = [
+    { label: '按状态分组', radio: true, checked: groupBy.value === 'status', action: () => (groupBy.value = 'status') },
+    { label: '按截止日期分组', radio: true, checked: groupBy.value === 'time', action: () => (groupBy.value = 'time') },
+  ];
+  void showMenu(items, anchor, { placement: 'bottom-end' });
+}
 
 const groupBy = ref<'status' | 'time'>(
   (() => {
@@ -233,17 +341,15 @@ function toggleSection(key: string) {
 }
 
 function onTaskDragStart(t: Task, e: DragEvent) {
-  if (groupBy.value !== 'status' || t.repeat) return;
+  if (t.repeat) return;
   draggingTaskId.value = t.id;
-  if (e.dataTransfer) {
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', t.id);
-  }
+  startTaskDrag(t, e, 'tasks-list');
 }
 
 function onTaskDragEnd() {
   draggingTaskId.value = null;
   dragOverSecKey.value = null;
+  endTaskDrag();
 }
 
 function onSecDragOver(key: string, e: DragEvent) {
@@ -452,7 +558,63 @@ function onShowEmptyUpdate(val: boolean) {
 
 <template>
   <div class="tasks-page">
+    <!-- Woday Minimalist Header on Desktop / Tablet -->
+    <header v-if="!isPhone" class="wd-tasks-head">
+      <div class="wth-left">
+        <h1 class="wth-title">{{ scopedGroupId && doc.groups[scopedGroupId] ? `${doc.groups[scopedGroupId].name} · 待办` : '待办' }}</h1>
+        <span class="wth-count">{{ filteredTasks.filter((t) => effectiveWorkspaceStatus(t) !== 'done').length }}</span>
+      </div>
+
+      <div class="wth-right">
+        <button
+          type="button"
+          class="wth-pill-btn"
+          :class="{ active: showFilterBar }"
+          @click="filtersExpanded = !filtersExpanded"
+        >
+          <FIcon name="filter" :size="13" />
+          <span>筛选</span>
+          <span v-if="filterTokens.length" class="wth-badge">{{ filterTokens.length }}</span>
+        </button>
+
+        <button
+          v-if="viewMode === 'list'"
+          type="button"
+          class="wth-pill-btn"
+          @click="openGroupByMenu"
+        >
+          <span>{{ groupBy === 'status' ? '按状态' : '按日期' }}</span>
+          <FIcon name="chevronDown" :size="11" />
+        </button>
+
+        <!-- Woday List <-> Kanban Board Toggle -->
+        <div class="wth-mode-seg" role="radiogroup" aria-label="切换列表与看板视图">
+          <button
+            type="button"
+            class="wth-seg-btn"
+            :class="{ active: viewMode === 'list' }"
+            title="列表视图"
+            aria-label="列表视图"
+            @click="viewMode = 'list'"
+          >
+            <FIcon name="list" :size="15" />
+          </button>
+          <button
+            type="button"
+            class="wth-seg-btn"
+            :class="{ active: viewMode === 'board' }"
+            title="看板视图"
+            aria-label="看板视图"
+            @click="viewMode = 'board'"
+          >
+            <FIcon name="board" :size="15" />
+          </button>
+        </div>
+      </div>
+    </header>
+
     <TokenFilterBar
+      v-if="showFilterBar"
       :tokens="filterTokens"
       :search-query="searchQuery"
       :group-by="groupBy"
@@ -466,7 +628,94 @@ function onShowEmptyUpdate(val: boolean) {
       @update:show-empty-statuses="onShowEmptyUpdate"
     />
 
-    <div class="tasks-scroll" :class="{ phone: isPhone }">
+    <!-- Woday 3-Column Kanban Board View (Desktop / Tablet) -->
+    <div v-if="!isPhone && viewMode === 'board'" class="wd-kanban-scroll">
+      <div class="wd-kanban-grid">
+        <section
+          v-for="col in kanbanColumns"
+          :key="col.key"
+          class="wd-kb-col"
+          :class="{ 'drag-over': dragOverCol === col.key }"
+          @dragover.prevent="dragOverCol = col.key"
+          @dragleave="dragOverCol === col.key && (dragOverCol = null)"
+          @drop.prevent="onKanbanDrop(col)"
+        >
+          <header class="wd-kb-head">
+            <span class="wd-kb-title">{{ col.title }}</span>
+            <span class="wd-kb-cnt">{{ col.tasks.length }}</span>
+            <button
+              type="button"
+              class="wd-kb-add"
+              :title="`新建到「${col.title}」`"
+              @click="openSectionComposer(col.targetStatus)"
+            >
+              <FIcon name="add" :size="13" />
+            </button>
+          </header>
+
+          <form
+            v-if="composerKey === col.targetStatus"
+            class="wd-kb-composer"
+            @submit.prevent="submitSectionTask(col.targetStatus)"
+          >
+            <input
+              v-model="composerTitle"
+              :data-sec-input="col.targetStatus"
+              type="text"
+              class="wd-kb-input"
+              :placeholder="`添加到「${col.title}」…`"
+              @keydown.esc.stop="cancelComposer"
+            />
+            <div class="wd-kb-c-acts">
+              <button type="submit" class="sc-btn ok" :disabled="!composerTitle.trim()">创建</button>
+              <button type="button" class="sc-btn" @click="cancelComposer">取消</button>
+            </div>
+          </form>
+
+          <div class="wd-kb-cards">
+            <article
+              v-for="t in col.tasks"
+              :key="t.id"
+              class="wd-kb-card"
+              :class="{ done: col.key === 'done', dragging: draggingTaskId === t.id }"
+              draggable="true"
+              @dragstart="onKanbanDragStart(t, $event)"
+              @dragend="onKanbanDragEnd"
+              @click="openTaskDetail(t.id)"
+              @contextmenu.prevent="openRowMenu(t, $event)"
+            >
+              <button
+                type="button"
+                class="wd-kb-glyph"
+                :class="kanbanGlyph(t)"
+                :title="col.key === 'done' ? '标记未完成' : '标记完成'"
+                @click.stop="toggleDoneDirect(t)"
+              >
+                <svg v-if="kanbanGlyph(t) === 'done'" viewBox="0 0 12 12"><path d="M2.5 6.3 5 8.8 9.5 3.6" /></svg>
+                <span v-else-if="kanbanGlyph(t) === 'progress'" class="wd-kb-half" />
+              </button>
+
+              <div class="wd-kb-card-body">
+                <div class="wd-kb-card-title">{{ t.title }}</div>
+                <div class="wd-kb-card-meta">
+                  <span class="wd-kb-date">{{ dateHint(t) }}</span>
+                  <span v-if="t.time" class="wd-kb-time">{{ t.time }}</span>
+                  <span
+                    v-if="!scopedGroupId && kanbanGroupPill(t.groupId)"
+                    class="wd-kb-tag"
+                    :style="{ background: kanbanGroupPill(t.groupId)!.bg, color: kanbanGroupPill(t.groupId)!.color }"
+                  >
+                    {{ kanbanGroupPill(t.groupId)!.name }}
+                  </span>
+                </div>
+              </div>
+            </article>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <div v-else class="tasks-scroll" :class="{ phone: isPhone }">
       <div v-if="sections.length" class="task-sections">
         <section
           v-for="sec in sections"
@@ -555,7 +804,7 @@ function onShowEmptyUpdate(val: boolean) {
                 done: effectiveWorkspaceStatus(t) === 'done',
                 dragging: draggingTaskId === t.id,
               }"
-              :draggable="groupBy === 'status' && !t.repeat"
+              :draggable="!t.repeat"
               @dragstart="onTaskDragStart(t, $event)"
               @dragend="onTaskDragEnd"
             >
@@ -1310,5 +1559,340 @@ function onShowEmptyUpdate(val: boolean) {
   .tr-pri-btn.ghost {
     opacity: 0.72;
   }
+}
+
+/* Woday Minimalist Tasks Header & Kanban Board */
+.wd-tasks-head {
+  flex: none;
+  padding: 16px 26px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.wth-left {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.wth-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 780;
+  letter-spacing: -0.03em;
+  color: var(--ws-ink);
+}
+
+.wth-count {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ws-ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.wth-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wth-pill-btn {
+  height: 30px;
+  padding: 0 11px;
+  border-radius: 999px;
+  border: 1px solid var(--ws-hairline);
+  background: var(--ws-card-subtle);
+  color: var(--ws-ink-secondary);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 560;
+  cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+
+.wth-pill-btn:hover {
+  background: var(--ws-pill-hover);
+  color: var(--ws-ink);
+}
+
+.wth-pill-btn.active {
+  background: var(--ws-card-bg);
+  border-color: var(--ws-hairline-strong);
+  color: var(--ws-ink);
+  box-shadow: var(--ws-shadow-sm);
+}
+
+.wth-badge {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--ws-ink);
+  color: var(--ws-ink-inverse);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+}
+
+.wth-mode-seg {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px;
+  border-radius: 999px;
+  border: 1px solid var(--ws-hairline);
+  background: var(--ws-card-subtle);
+  gap: 2px;
+}
+
+.wth-seg-btn {
+  width: 28px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ws-ink-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
+}
+
+.wth-seg-btn.active {
+  background: var(--ws-ink);
+  color: var(--ws-ink-inverse);
+  box-shadow: var(--ws-shadow-sm);
+}
+
+.wd-kanban-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 24px 24px;
+}
+
+.wd-kanban-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(240px, 1fr));
+  gap: 14px;
+  align-items: start;
+  min-height: 100%;
+}
+
+.wd-kb-col {
+  background: color-mix(in srgb, var(--ws-card-subtle) 75%, var(--ws-card-bg));
+  border: 1px solid var(--ws-hairline);
+  border-radius: 14px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 280px;
+  transition: border-color 140ms ease, background-color 140ms ease;
+}
+
+.wd-kb-col.drag-over {
+  border-color: color-mix(in srgb, #e84c3d 55%, var(--ws-hairline));
+  background: color-mix(in srgb, #e84c3d 5%, var(--ws-card-subtle));
+}
+
+.wd-kb-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 4px 2px;
+}
+
+.wd-kb-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ws-ink);
+}
+
+.wd-kb-cnt {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ws-ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.wd-kb-add {
+  margin-left: auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ws-ink-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.wd-kb-add:hover {
+  background: var(--ws-pill-hover);
+  color: var(--ws-ink);
+}
+
+.wd-kb-composer {
+  padding: 10px;
+  border-radius: 11px;
+  border: 1px solid var(--ws-hairline-strong);
+  background: var(--ws-card-bg);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.wd-kb-input {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--ws-ink);
+  font: inherit;
+  font-size: 13.5px;
+  outline: none;
+}
+
+.wd-kb-c-acts {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.wd-kb-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.wd-kb-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 12px;
+  border-radius: 11px;
+  border: 1px solid var(--ws-hairline);
+  background: var(--ws-card-bg);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+  cursor: grab;
+  transition: transform 130ms ease, box-shadow 140ms ease, border-color 140ms ease, opacity 140ms ease;
+}
+
+.wd-kb-card:hover {
+  border-color: var(--ws-hairline-strong);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.055);
+  transform: translateY(-1px);
+}
+
+.wd-kb-card.dragging {
+  opacity: 0.45;
+}
+
+.wd-kb-card.done .wd-kb-card-title {
+  color: var(--ws-ink-muted);
+  text-decoration: line-through;
+}
+
+.wd-kb-card-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.wd-kb-card-title {
+  font-size: 13.5px;
+  font-weight: 560;
+  color: var(--ws-ink);
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.wd-kb-card-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 11.5px;
+}
+
+.wd-kb-date {
+  color: var(--ws-ink-muted);
+}
+
+.wd-kb-time {
+  color: #e25343;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.wd-kb-tag {
+  padding: 1px 7px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 620;
+}
+
+.wd-kb-glyph {
+  width: 17px;
+  height: 17px;
+  margin-top: 2px;
+  padding: 0;
+  flex: none;
+  border-radius: 5.5px;
+  border: 1.6px solid color-mix(in srgb, var(--ws-ink-muted) 48%, transparent);
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.wd-kb-glyph.important {
+  border-color: #e59b28;
+  border-width: 1.8px;
+}
+
+.wd-kb-glyph.progress {
+  border-radius: 999px;
+  border-color: #e25343;
+  border-width: 1.7px;
+  overflow: hidden;
+}
+
+.wd-kb-half {
+  width: 52%;
+  height: 100%;
+  background: var(--ws-ink);
+  margin-right: auto;
+}
+
+.wd-kb-glyph.done {
+  border-radius: 999px;
+  border-color: var(--ws-ink);
+  background: var(--ws-ink);
+  color: var(--ws-ink-inverse);
+}
+
+.wd-kb-glyph.done svg {
+  width: 10px;
+  height: 10px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 </style>

@@ -9,11 +9,9 @@ const label: string =
   (window as { __TAURI_INTERNALS__?: { metadata?: { currentWebview?: { label?: string } } } })
     .__TAURI_INTERNALS__?.metadata?.currentWebview?.label ??
   new URLSearchParams(location.search).get('w') ??
-  (Capacitor.isNativePlatform() || import.meta.env.MODE === 'android'
-    ? 'mobile'
-    : import.meta.env.MODE === 'server'
-      ? 'workspace'
-      : 'desk');
+  (Capacitor.isNativePlatform() || import.meta.env.MODE === 'android' || import.meta.env.MODE === 'server'
+    ? 'workspace'
+    : 'desk');
 
 document.documentElement.dataset.window = label;
 // No Mica or desktop behind the page in a plain browser: window-shell.css paints stand-ins.

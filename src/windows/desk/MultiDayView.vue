@@ -50,6 +50,7 @@ import { effectiveMultiDaySpan, useViewport } from '@/composables/useViewport';
 import { chipMenu, removeTask } from './menus';
 import { clusterSpotlightStateOf, goToday, openEditor, page, setPendingDraft, shownTasks, spotlightStateOf, ui, updatePendingDraftFromTimeline } from './state';
 import type { SpotlightVisualState } from '@/lib/filter';
+import { dropTaskToDate, getDraggedTaskId, hasTaskDragPayload, workspaceDrag } from '../workspace/workspaceDrag';
 
 const DAYS_KEY = 'fluentcal.multiday.days';
 const HOUR_H_KEY = 'fluentcal.multiday.hourH';
@@ -1156,6 +1157,55 @@ onBeforeUnmount(() => {
   clearTimeout(zoomBadgeTimer);
   if (nowTimer) clearInterval(nowTimer);
 });
+
+// External HTML5 task drop onto MultiDayView columns & day headers
+const extDropCol = ref<{ date: ISODate; min: number } | null>(null);
+const extDropHeadDate = ref<ISODate | ''>('');
+
+function onColExtDragOver(date: ISODate, e: DragEvent) {
+  if (!canEdit() || !hasTaskDragPayload(e)) return;
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+  const raw = minFromGrid(e.clientY);
+  const snapped = clampMinutes(snapMinutes(raw), 0, DAY_MINUTES - DEFAULT_DURATION);
+  extDropCol.value = { date, min: snapped };
+}
+
+function onColExtDragLeave(date: ISODate, e: DragEvent) {
+  const cur = e.currentTarget as HTMLElement | null;
+  if (cur && e.relatedTarget instanceof Node && cur.contains(e.relatedTarget)) return;
+  if (extDropCol.value?.date === date) extDropCol.value = null;
+}
+
+function onColExtDrop(date: ISODate, e: DragEvent) {
+  const hit = extDropCol.value;
+  extDropCol.value = null;
+  if (!canEdit()) return;
+  const taskId = getDraggedTaskId(e);
+  if (!taskId) return;
+  e.preventDefault();
+  const s =
+    hit && hit.date === date
+      ? hit.min
+      : clampMinutes(snapMinutes(minFromGrid(e.clientY)), 0, DAY_MINUTES - DEFAULT_DURATION);
+  void dropTaskToDate(taskId, date, formatMinToHHMM(s), DEFAULT_DURATION);
+}
+
+function onDayHeadExtDragOver(date: ISODate, e: DragEvent) {
+  if (!canEdit() || !hasTaskDragPayload(e)) return;
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+  extDropHeadDate.value = date;
+}
+
+function onDayHeadExtDrop(date: ISODate, e: DragEvent) {
+  extDropHeadDate.value = '';
+  if (!canEdit()) return;
+  const taskId = getDraggedTaskId(e);
+  if (!taskId) return;
+  e.preventDefault();
+  void dropTaskToDate(taskId, date);
+}
 </script>
 
 <template>
@@ -1250,10 +1300,13 @@ onBeforeUnmount(() => {
             :key="`hd-${d}`"
             type="button"
             class="md-day-head"
-            :class="{ today: d === now, selected: d === ui.selected, rest: headerMeta(d).isRest }"
+            :class="{ today: d === now, selected: d === ui.selected, rest: headerMeta(d).isRest, 'ext-drop': extDropHeadDate === d }"
             title="单击选中，双击切到单日视图"
             @click="selectHeaderDay(d)"
             @dblclick="openSingleDay(d)"
+            @dragover="onDayHeadExtDragOver(d, $event)"
+            @dragleave="extDropHeadDate === d && (extDropHeadDate = '')"
+            @drop="onDayHeadExtDrop(d, $event)"
           >
             <span class="hd-wd">周{{ headerMeta(d).wd }}</span>
             <span class="hd-num">{{ headerMeta(d).num }}</span>
@@ -1361,11 +1414,27 @@ onBeforeUnmount(() => {
                 today: d === now,
                 selected: d === ui.selected,
                 bordered: idx > 0,
-                'drop-target': drag?.kind === 'move' && drag.targetDate === d,
+                'drop-target': (drag?.kind === 'move' && drag.targetDate === d) || extDropCol?.date === d,
               }"
               @pointerdown="onColPointerDown(d, $event)"
               @dblclick="onColDblClick(d, $event)"
+              @dragover="onColExtDragOver(d, $event)"
+              @dragleave="onColExtDragLeave(d, $event)"
+              @drop="onColExtDrop(d, $event)"
             >
+              <div
+                v-if="extDropCol && extDropCol.date === d"
+                class="md-ext-drop-ghost"
+                :style="{
+                  top: `${(extDropCol.min / 60) * hourHeight}px`,
+                  height: `${(DEFAULT_DURATION / 60) * hourHeight}px`,
+                  '--ghost-color': workspaceDrag.color || '#3b82f6',
+                }"
+                aria-hidden="true"
+              >
+                <span class="edg-title">{{ workspaceDrag.title || '松手安排到此时间' }}</span>
+                <span class="edg-time">{{ formatRangeLabel(extDropCol.min, Math.min(DAY_MINUTES, extDropCol.min + DEFAULT_DURATION), false) }}</span>
+              </div>
               <div
                 v-if="d === now"
                 class="md-now-line"
@@ -2375,6 +2444,49 @@ onBeforeUnmount(() => {
   .md-density-group {
     display: none;
   }
+}
+
+.md-day-head.ext-drop {
+  background: color-mix(in srgb, #e85d2a 12%, transparent);
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, #e85d2a 42%, transparent);
+}
+
+.md-ext-drop-ghost {
+  position: absolute;
+  left: 3px;
+  right: 4px;
+  z-index: 35;
+  border-radius: 9px;
+  padding: 5px 8px;
+  background: color-mix(in srgb, var(--ghost-color, #3b82f6) 24%, var(--ws-card-bg, #ffffff));
+  border: 1.5px dashed color-mix(in srgb, var(--ghost-color, #3b82f6) 72%, transparent);
+  color: color-mix(in srgb, var(--ghost-color, #3b82f6) 76%, #111111);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  pointer-events: none;
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--ghost-color, #3b82f6) 20%, transparent);
+  transition: top 90ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.multiday-view.dark .md-ext-drop-ghost {
+  background: color-mix(in srgb, var(--ghost-color, #3b82f6) 30%, #181a20);
+  color: #ffffff;
+}
+
+.md-ext-drop-ghost .edg-title {
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.md-ext-drop-ghost .edg-time {
+  font-size: 10.5px;
+  font-weight: 600;
+  opacity: 0.82;
+  font-variant-numeric: tabular-nums;
 }
 
 @media (prefers-reduced-motion: reduce) {

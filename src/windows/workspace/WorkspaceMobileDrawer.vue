@@ -27,6 +27,7 @@ const props = defineProps<{
   inboxCount: number;
   openCount: number;
   countdownCount: number;
+  subscriptionDueCount?: number;
   wsTheme: 'light' | 'dark';
 }>();
 
@@ -67,13 +68,14 @@ const navItems = computed(() => [
   { kind: 'calendar' as const, label: '日历视图', icon: 'calendar', count: 0 },
   { kind: 'inbox' as const, label: '收集箱', icon: 'flag', count: props.inboxCount },
   { kind: 'tasks' as const, label: '全部待办', icon: 'checklist', count: props.openCount },
+  { kind: 'subscriptions' as const, label: '订阅日历', icon: 'subscription', count: props.subscriptionDueCount ?? 0 },
   { kind: 'countdowns' as const, label: '倒数日', icon: 'timer', count: props.countdownCount },
   { kind: 'gantt' as const, label: '项目甘特', icon: 'gantt', count: 0 },
 ]);
 
 const starredTasks = computed(() =>
   taskList.value
-    .filter((t) => !t.countdownOnly && !!t.starred)
+    .filter((t) => !t.countdownOnly && !t.subscriptionOnly && !!t.starred)
     .sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0)),
 );
 
@@ -81,7 +83,7 @@ const groupOpenCounts = computed(() => {
   const map = new Map<string, number>();
   const todayIso = now.value;
   for (const t of taskList.value) {
-    if (t.countdownOnly || !t.groupId) continue;
+    if (t.countdownOnly || t.subscriptionOnly || !t.groupId) continue;
     if (classifyTaskBucket(t, todayIso) === 'completed') continue;
     map.set(t.groupId, (map.get(t.groupId) ?? 0) + 1);
   }
