@@ -5,9 +5,13 @@ import * as backend from "./backend";
 import { canonical, cloudView, decodeCloud, prune, SyncError, syncRound } from "./sync-model";
 import { createRemote, type SyncConfig } from "./sync-remote";
 import { getSecret, setSecret } from "./vault";
+import { detectSyncConflicts, extractBaseStamps, type SyncBaseStamps } from "@/lib/syncConflicts";
+import { recordSyncConflicts } from "@/composables/syncConflicts";
 
 const STATE_KEY = "fluentcal.mobile.sync-state.v1";
 const DEVICE_KEY = "fluentcal.mobile.device.v1";
+const BASE_KEY = "fluentcal.mobile.sync-base.v1";
+let baseStamps: SyncBaseStamps | null = null;
 export const syncStatus = reactive<SyncStatus>({ enabled: false, provider: "", syncing: false, lastSync: null,
   error: null, errorKind: null, halted: false, pending: false, remoteDevice: null, remoteSavedAt: null });
 let config: SyncConfig;
@@ -40,6 +44,9 @@ function scheduleEdit() {
 async function persistStatus() {
   await Preferences.set({ key: STATE_KEY, value: JSON.stringify({ fingerprint: fingerprint(config), lastSync: syncStatus.lastSync,
     remoteDevice: syncStatus.remoteDevice, remoteSavedAt: syncStatus.remoteSavedAt }) });
+  if (baseStamps) {
+    await Preferences.set({ key: BASE_KEY, value: JSON.stringify(baseStamps) });
+  }
 }
 async function refreshConfig() {
   const next = (await backend.snapshot()).settings.sync;
@@ -63,6 +70,8 @@ export async function startSync() {
       syncStatus.remoteDevice = saved.remoteDevice ?? null;
       syncStatus.remoteSavedAt = saved.remoteSavedAt ?? null;
     }
+    const savedBase = (await Preferences.get({ key: BASE_KEY })).value;
+    if (savedBase) baseStamps = JSON.parse(savedBase) as SyncBaseStamps;
   } catch { /* Nonessential status cache; fresh fetch will reconstruct it. */ }
   started = true;
   const unDirty = backend.on("mobile://dirty", () => { syncStatus.pending = true; scheduleEdit(); });
@@ -88,7 +97,14 @@ export function syncNow(manual = true): Promise<void> {
     try {
       if (!navigator.onLine) throw new SyncError("network", "当前离线，修改已保存在本机，联网后自动同步");
       const remote = createRemote(config, await getSecret(config.provider));
-      const result = await syncRound(backend, remote, device);
+      const result = await syncRound(backend, remote, device, false, ({ local, remote: rem, remoteDevice }) => {
+        const found = detectSyncConflicts(local, rem, baseStamps, {
+          localDevice: device,
+          remoteDevice: remoteDevice || "云端其他设备",
+        });
+        if (found.length) recordSyncConflicts(found);
+      });
+      baseStamps = extractBaseStamps(result.view);
       syncStatus.pending = canonical(prune(cloudView(await backend.snapshot()))) !== canonical(result.view);
       Object.assign(syncStatus, { lastSync: Date.now(), remoteDevice: result.remoteDevice, remoteSavedAt: result.remoteSavedAt });
       clearError();
@@ -145,6 +161,7 @@ export async function enableSync(mode: "merge" | "replace") {
       await backend.backupBeforeSync();
       const remote = createRemote(config, await getSecret(config.provider));
       const result = await syncRound(backend, remote, device, mode === "replace");
+      baseStamps = extractBaseStamps(result.view);
       await backend.call("store_patch_settings", { patch: { sync: { enabled: true } } });
       await refreshConfig();
       Object.assign(syncStatus, { lastSync: Date.now(), remoteDevice: result.remoteDevice, remoteSavedAt: result.remoteSavedAt,

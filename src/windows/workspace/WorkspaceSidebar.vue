@@ -5,6 +5,8 @@ import type { Group, Task } from '@/types';
 import { isServer, isTauri } from '@/api';
 import { now } from '@/composables/now';
 import { syncNow, syncStatus, watchSync } from '@/composables/sync';
+import { conflictCount } from '@/composables/syncConflicts';
+import { serverState } from '@/serverApi';
 import { statusLine } from '@/lib/syncText';
 import { effectiveWorkspaceStatus } from '@/lib/taskMeta';
 import { deleteGroup, makeGroup, saveGroup, saveTask } from '@/lib/tasks';
@@ -55,10 +57,15 @@ const emit = defineEmits<{
   quickSearch: [];
   openTask: [taskId: string];
   summonDesk: [];
-  openSettings: [];
+  openSettings: [page?: string];
   toggleTheme: [];
   logout: [];
 }>();
+
+const brandTitle = computed(() => {
+  if (isServer && serverState.account?.displayName) return serverState.account.displayName;
+  return 'FluentCal';
+});
 
 const starredExpanded = ref(true);
 const groupsExpanded = ref(true);
@@ -147,6 +154,7 @@ function openWorkspaceMenu(e: MouseEvent) {
     ...(syncStatus.enabled ? [{ label: '立即同步', icon: 'sync', action: () => void syncNow() }] : []),
     ...(isTauri ? [{ label: '呼出桌面贴片日历', icon: 'pin', action: () => emit('summonDesk') }] : []),
     { separator: true },
+    { label: '账号与云同步…', icon: 'cloud', action: () => emit('openSettings', 'sync') },
     { label: '偏好设置…', icon: 'settings', shortcut: 'Ctrl+,', action: () => emit('openSettings') },
     ...(isServer ? [{ separator: true as const }, { label: '退出登录', icon: 'power', danger: true, action: () => emit('logout') }] : []),
   ];
@@ -480,8 +488,9 @@ function onGroupDrop(groupId: string, e: DragEvent) {
       <!-- Tegon Top Workspace Header -->
       <div class="sb-header">
         <button type="button" class="sb-ws-btn" @click="openWorkspaceMenu">
-          <GroupSquircle name="FC" color-key="gray" :size="20" />
-          <span class="sb-brand-name">FluentCal</span>
+          <GroupSquircle :name="brandTitle.slice(0, 2).toUpperCase()" color-key="gray" :size="20" />
+          <span class="sb-brand-name">{{ brandTitle }}</span>
+          <span v-if="conflictCount > 0" class="sb-brand-conflict-dot" :title="`${conflictCount} 处同步冲突待处理`" />
           <FIcon name="chevronDown" :size="9" class="sb-brand-chev" />
         </button>
 
@@ -703,6 +712,21 @@ function onGroupDrop(groupId: string, e: DragEvent) {
         </section>
       </div>
 
+      <!-- Sync Conflict Alert Strip (Appears Only When Unresolved Multi-Device Conflicts Exist) -->
+      <Transition name="sb-conflict-tr">
+        <button
+          v-if="conflictCount > 0"
+          type="button"
+          class="sb-conflict-banner"
+          title="查看并处理多端同步冲突"
+          @click="emit('openSettings', 'sync')"
+        >
+          <span class="sb-conflict-pulse" aria-hidden="true" />
+          <span class="sb-conflict-text">{{ conflictCount }} 处同步冲突</span>
+          <span class="sb-conflict-go">去处理</span>
+        </button>
+      </Transition>
+
       <!-- 1:1 Bottom 3-Slot Floating Utility Dock -->
       <footer class="sb-dock">
         <div class="sb-dock-left">
@@ -739,14 +763,14 @@ function onGroupDrop(groupId: string, e: DragEvent) {
             </Transition>
           </button>
           <button
-            v-if="syncStatus.enabled"
+            v-if="syncStatus.enabled || conflictCount > 0"
             type="button"
             class="dock-ico"
-            :class="{ spinning: syncStatus.syncing }"
-            :title="`${statusLine(syncStatus)}（点击同步）`"
-            @click="syncNow()"
+            :class="{ spinning: syncStatus.syncing, 'has-conflict': conflictCount > 0 }"
+            :title="conflictCount > 0 ? `检测到 ${conflictCount} 处同步冲突，点击查看` : `${statusLine(syncStatus)}（点击同步）`"
+            @click="conflictCount > 0 ? emit('openSettings', 'sync') : syncNow()"
           >
-            <FIcon :name="syncStatus.error ? 'warning' : 'sync'" :size="13" />
+            <FIcon :name="conflictCount > 0 || syncStatus.error ? 'warning' : 'sync'" :size="13" />
           </button>
           <button
             v-if="isTauri"
@@ -1365,5 +1389,98 @@ function onGroupDrop(groupId: string, e: DragEvent) {
 .sb-help-tr-leave-to {
   opacity: 0;
   transform: translateY(4px) scale(0.97);
+}
+
+.sb-brand-conflict-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #f59e0b;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.24);
+  flex: none;
+}
+
+.sb-conflict-banner {
+  margin: 0 10px 8px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(245, 158, 11, 0.36);
+  background: rgba(245, 158, 11, 0.11);
+  color: #b45309;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 140ms ease, transform 120ms ease;
+}
+
+.sb-conflict-banner:hover {
+  background: rgba(245, 158, 11, 0.18);
+}
+
+.sb-conflict-banner:active {
+  transform: scale(0.98);
+}
+
+:global(html[data-ws-theme='dark']) .sb-conflict-banner {
+  color: #fbbf24;
+  background: rgba(245, 158, 11, 0.14);
+  border-color: rgba(251, 191, 36, 0.34);
+}
+
+.sb-conflict-pulse {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #f59e0b;
+  flex: none;
+  animation: sb-conflict-blink 1.8s ease-in-out infinite;
+}
+
+@keyframes sb-conflict-blink {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.5);
+  }
+  50% {
+    opacity: 0.7;
+    box-shadow: 0 0 0 4px rgba(245, 158, 11, 0);
+  }
+}
+
+.sb-conflict-text {
+  flex: 1;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sb-conflict-go {
+  font-size: 11px;
+  opacity: 0.85;
+}
+
+.dock-ico.has-conflict {
+  color: #d97706;
+}
+
+:global(html[data-ws-theme='dark']) .dock-ico.has-conflict {
+  color: #fbbf24;
+}
+
+.sb-conflict-tr-enter-active,
+.sb-conflict-tr-leave-active {
+  transition: opacity 180ms ease, transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.sb-conflict-tr-enter-from,
+.sb-conflict-tr-leave-to {
+  opacity: 0;
+  transform: translateY(6px);
 }
 </style>

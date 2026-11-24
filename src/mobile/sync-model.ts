@@ -86,7 +86,13 @@ export interface SyncStore {
   absorb(view: CloudView, replace: boolean, baseline?: CloudView): Promise<CloudView>;
 }
 /** Fetch every round: no cached revisions can become detached from their content. */
-export async function syncRound(store: SyncStore, remote: Remote, device: string, replace = false) {
+export async function syncRound(
+  store: SyncStore,
+  remote: Remote,
+  device: string,
+  replace = false,
+  onBeforeAbsorb?: (info: { local: CloudView; remote: CloudView; remoteDevice: string | null }) => void,
+) {
   // For first-time replacement, edits made while the request is in flight still win locally.
   const baseline = replace ? cloudView(await store.snapshot()) : undefined;
   let remoteDevice: string | null = null, remoteSavedAt: number | null = null;
@@ -97,6 +103,9 @@ export async function syncRound(store: SyncStore, remote: Remote, device: string
     if (decoded) {
       remoteDevice = decoded.device;
       remoteSavedAt = decoded.savedAt;
+      if (!replace && onBeforeAbsorb) {
+        onBeforeAbsorb({ local: cloudView(await store.snapshot()), remote: decoded.view, remoteDevice });
+      }
       await store.absorb(decoded.view, replace, baseline);
       replace = false;
     }

@@ -123,6 +123,9 @@ jobs:
             OUT="FluentCal-Android-${VERSION}-debug.apk"
           fi
           cp "$SRC" "release-out/${OUT}"
+          if [ "$VARIANT" = "release" ]; then
+            "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose "release-out/${OUT}"
+          fi
           (cd release-out && sha256sum "${OUT}" > "${OUT}.sha256")
           cat "release-out/${OUT}.sha256"
           echo "apk_name=${OUT}" >> "$GITHUB_OUTPUT"

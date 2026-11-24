@@ -5,6 +5,7 @@ import type { Group, Task } from '@/types';
 import { isServer, isTauri } from '@/api';
 import { now } from '@/composables/now';
 import { syncNow, syncStatus, watchSync } from '@/composables/sync';
+import { conflictCount } from '@/composables/syncConflicts';
 import { statusLine } from '@/lib/syncText';
 import { effectiveWorkspaceStatus } from '@/lib/taskMeta';
 import { deleteGroup, makeGroup, saveGroup, saveTask } from '@/lib/tasks';
@@ -39,7 +40,7 @@ const emit = defineEmits<{
   newTask: [groupId?: string];
   quickSearch: [];
   openTask: [taskId: string];
-  openSettings: [];
+  openSettings: [page?: string];
   toggleTheme: [];
   summonDesk: [];
   logout: [];
@@ -173,9 +174,9 @@ function openQuickSearchFromDrawer() {
   emit('quickSearch');
 }
 
-function openSettingsFromDrawer() {
+function openSettingsFromDrawer(page?: string) {
   emit('close');
-  emit('openSettings');
+  emit('openSettings', page);
 }
 
 function openStarredTask(t: Task) {
@@ -527,6 +528,16 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKey, true));
           </section>
         </div>
 
+        <button
+          v-if="conflictCount > 0"
+          type="button"
+          class="wmd-conflict-banner"
+          @click="openSettingsFromDrawer('sync')"
+        >
+          <span class="wmd-conflict-dot" aria-hidden="true" />
+          <span>检测到 {{ conflictCount }} 处同步冲突 · 点击处理</span>
+        </button>
+
         <footer class="wmd-foot">
           <button type="button" class="wmd-util-btn" @click="emit('toggleTheme')">
             <FIcon :name="wsTheme === 'dark' ? 'sun' : 'moon'" :size="14" />
@@ -545,7 +556,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKey, true));
             <span>{{ syncStatus.syncing ? '同步中' : '同步' }}</span>
           </button>
 
-          <button type="button" class="wmd-util-btn" @click="openSettingsFromDrawer">
+          <button type="button" class="wmd-util-btn" @click="openSettingsFromDrawer()">
             <FIcon name="settings" :size="14" />
             <span>设置</span>
           </button>
@@ -1008,5 +1019,34 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onDrawerKey, true));
 .wmd-drawer-enter-from .wmd-sheet,
 .wmd-drawer-leave-to .wmd-sheet {
   transform: translateX(-104%);
+}
+
+.wmd-conflict-banner {
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 11px;
+  border: 1px solid rgba(245, 158, 11, 0.38);
+  background: rgba(245, 158, 11, 0.12);
+  color: #b45309;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+:global(html[data-ws-theme='dark']) .wmd-conflict-banner {
+  color: #fbbf24;
+  background: rgba(245, 158, 11, 0.16);
+}
+
+.wmd-conflict-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #f59e0b;
+  flex: none;
 }
 </style>

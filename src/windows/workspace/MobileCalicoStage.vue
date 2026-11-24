@@ -1275,10 +1275,11 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   padding: 9px 12px;
-  border-radius: 11px;
-  background: color-mix(in srgb, var(--pill-color) 13%, var(--ws-card-bg));
+  border-radius: 13px;
+  border: 1px solid color-mix(in srgb, var(--pill-color) 18%, transparent);
+  background: color-mix(in srgb, var(--pill-color) 11%, var(--ws-card-bg));
   cursor: pointer;
-  transition: transform 120ms ease, opacity 140ms ease;
+  transition: transform var(--duration-quick, 150ms) var(--ease-smooth-out), opacity var(--duration-quick, 150ms) var(--ease-smooth-out);
 }
 
 .calico-allday-pill:active {

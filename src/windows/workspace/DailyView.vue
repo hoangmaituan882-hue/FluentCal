@@ -227,8 +227,12 @@ const summaryStats = computed(() => {
   let events = 0;
   let habits = 0;
   let important = 0;
+  let doneCount = 0;
   for (const o of dayOccurrences.value) {
-    if (o.done) continue;
+    if (o.done) {
+      doneCount++;
+      continue;
+    }
     if (o.task.time) events++;
     if (o.task.repeat) habits++;
     const p = effectivePriority(o.task);
@@ -236,7 +240,23 @@ const summaryStats = computed(() => {
       important++;
     }
   }
-  return { events, habits, important, openTotal: dayOccurrences.value.filter((o) => !o.done).length };
+  const totalCount = dayOccurrences.value.length;
+  return {
+    events,
+    habits,
+    important,
+    doneCount,
+    totalCount,
+    openTotal: totalCount - doneCount,
+  };
+});
+
+const summaryDialogue = computed(() => {
+  const dayLabel = isViewingToday.value ? '今天' : `${selectedParts.value[1]}月${selectedParts.value[2]}日`;
+  const { openTotal, totalCount } = summaryStats.value;
+  if (totalCount === 0) return `${greetingText.value}，${dayLabel}安排清爽空闲`;
+  if (openTotal === 0) return `${greetingText.value}，${dayLabel}事项已全部完成`;
+  return `${greetingText.value}，${dayLabel}还有 ${openTotal} 项待处理`;
 });
 
 const filteredOccurrences = computed(() => {
@@ -523,81 +543,118 @@ onBeforeUnmount(() => {
               </button>
             </div>
 
-            <!-- Natural-Language Daily Summary Card -->
-            <div class="wd-summary-box">
-              <div class="wd-summary-sentence">
-                <span>{{ greetingText }}，{{ isViewingToday ? '今天有' : `${selectedParts[1]}月${selectedParts[2]}日有` }}</span>
+            <!-- WWDC25 Interactive Snippets Deck (Overview Summary Card + Daily Habits Snippet) -->
+            <div class="wd-snippets-deck">
+              <section class="wd-summary-box" aria-label="今日安排摘要卡片">
+                <header class="wd-sum-head">
+                  <div class="wd-sum-dialogue-wrap">
+                    <strong class="wd-sum-dialogue">{{ summaryDialogue }}</strong>
+                    <span v-if="summaryStats.totalCount > 0" class="wd-sum-progress tabular">
+                      已完成 <NumberPop :value="summaryStats.doneCount" />/{{ summaryStats.totalCount }}
+                    </span>
+                  </div>
+                  <button
+                    v-if="summaryFilter !== 'all'"
+                    type="button"
+                    class="wd-sum-clear"
+                    @click="summaryFilter = 'all'"
+                  >
+                    显示全部
+                  </button>
+                </header>
 
-                <button
-                  type="button"
-                  class="wd-sum-chip rose"
-                  :class="{ active: summaryFilter === 'events' }"
-                  @click="toggleSummaryFilter('events')"
-                >
-                  <FIcon name="calendar" :size="12" />
-                  <span><NumberPop :value="summaryStats.events" /> 场日程</span>
-                </button>
+                <!-- 3 Concentric Glanceable Filter Stat Tiles -->
+                <div class="wd-sum-kpis" role="group" aria-label="按类型快速筛选当日事项">
+                  <button
+                    type="button"
+                    class="wd-sum-kpi rose"
+                    :class="{ active: summaryFilter === 'events', zero: summaryStats.events === 0 }"
+                    :aria-pressed="summaryFilter === 'events'"
+                    @click="toggleSummaryFilter('events')"
+                  >
+                    <span class="wd-kpi-ico">
+                      <FIcon name="calendar" :size="13" />
+                    </span>
+                    <div class="wd-kpi-copy">
+                      <strong class="wd-kpi-num tabular"><NumberPop :value="summaryStats.events" /></strong>
+                      <span class="wd-kpi-lbl">日程安排</span>
+                    </div>
+                  </button>
 
-                <button
-                  type="button"
-                  class="wd-sum-chip slate"
-                  :class="{ active: summaryFilter === 'habits' }"
-                  @click="toggleSummaryFilter('habits')"
-                >
-                  <FIcon name="flame" :size="12" />
-                  <span><NumberPop :value="summaryStats.habits" /> 项日常</span>
-                </button>
+                  <button
+                    type="button"
+                    class="wd-sum-kpi slate"
+                    :class="{ active: summaryFilter === 'habits', zero: summaryStats.habits === 0 }"
+                    :aria-pressed="summaryFilter === 'habits'"
+                    @click="toggleSummaryFilter('habits')"
+                  >
+                    <span class="wd-kpi-ico">
+                      <FIcon name="repeat" :size="13" />
+                    </span>
+                    <div class="wd-kpi-copy">
+                      <strong class="wd-kpi-num tabular"><NumberPop :value="summaryStats.habits" /></strong>
+                      <span class="wd-kpi-lbl">循环日常</span>
+                    </div>
+                  </button>
 
-                <span class="wd-sum-conj">和</span>
+                  <button
+                    type="button"
+                    class="wd-sum-kpi amber"
+                    :class="{ active: summaryFilter === 'important', zero: summaryStats.important === 0 }"
+                    :aria-pressed="summaryFilter === 'important'"
+                    @click="toggleSummaryFilter('important')"
+                  >
+                    <span class="wd-kpi-ico">
+                      <FIcon name="warning" :size="13" />
+                    </span>
+                    <div class="wd-kpi-copy">
+                      <strong class="wd-kpi-num tabular"><NumberPop :value="summaryStats.important" /></strong>
+                      <span class="wd-kpi-lbl">重要优先</span>
+                    </div>
+                  </button>
+                </div>
 
-                <button
-                  type="button"
-                  class="wd-sum-chip amber"
-                  :class="{ active: summaryFilter === 'important' }"
-                  @click="toggleSummaryFilter('important')"
-                >
-                  <FIcon name="warning" :size="12" />
-                  <span><NumberPop :value="summaryStats.important" /> 项重要</span>
-                </button>
+                <!-- Contextual WWDC25 Deep-Link Alert Mini-Snippets (Upcoming Subscription / Countdown) -->
+                <div v-if="soonSubscription || nextCountdown" class="wd-context-snippets">
+                  <button
+                    v-if="soonSubscription"
+                    type="button"
+                    class="wd-ctx-tile sub-due"
+                    title="前往订阅日历查看详情"
+                    @click="emit('openSubscriptions')"
+                  >
+                    <span class="wd-ctx-ico">
+                      <FIcon name="subscription" :size="12" />
+                    </span>
+                    <span class="wd-ctx-label">{{ soonSubscription.task.title }}</span>
+                    <strong class="wd-ctx-badge tabular">
+                      {{ soonSubscription.window.remainDays === 0 ? '今日扣款' : `${soonSubscription.window.remainDays}天后扣款` }}
+                    </strong>
+                    <FIcon name="chevronRight" :size="11" class="wd-ctx-chev" />
+                  </button>
 
-                <button
-                  v-if="summaryFilter !== 'all'"
-                  type="button"
-                  class="wd-sum-clear"
-                  @click="summaryFilter = 'all'"
-                >
-                  显示全部
-                </button>
-              </div>
+                  <button
+                    v-if="nextCountdown"
+                    type="button"
+                    class="wd-ctx-tile cd-next"
+                    title="前往倒数日查看全部"
+                    @click="emit('openCountdowns')"
+                  >
+                    <span class="wd-ctx-ico">
+                      <FIcon name="clock" :size="12" />
+                    </span>
+                    <span class="wd-ctx-label">{{ nextCountdown.label }}</span>
+                    <strong class="wd-ctx-badge tabular">
+                      {{ nextCountdown.days === 0 ? '就在今天' : `还剩 ${nextCountdown.days} 天` }}
+                    </strong>
+                    <FIcon name="chevronRight" :size="11" class="wd-ctx-chev" />
+                  </button>
+                </div>
+              </section>
 
-              <div class="wd-summary-whispers">
-                <button
-                  v-if="soonSubscription"
-                  type="button"
-                  class="wd-cd-whisper sub-due"
-                  title="查看订阅日历"
-                  @click="emit('openSubscriptions')"
-                >
-                  <FIcon name="subscription" :size="11" />
-                  <span>{{ soonSubscription.task.title }}</span>
-                  <strong>{{ soonSubscription.window.remainDays === 0 ? '今日扣款' : `${soonSubscription.window.remainDays}天后` }}</strong>
-                </button>
-
-                <button
-                  v-if="nextCountdown"
-                  type="button"
-                  class="wd-cd-whisper"
-                  title="查看全部倒数日"
-                  @click="emit('openCountdowns')"
-                >
-                  <span>{{ nextCountdown.label }}</span>
-                  <strong>{{ nextCountdown.days === 0 ? '今天' : `${nextCountdown.days}天` }}</strong>
-                </button>
-              </div>
+              <!-- WWDC25 Daily Habits Interactive Snippet Card (renders only when habits exist) -->
+              <TodayHabitsStrip :date="selectedDate" @open-habits="emit('openHabits')" />
             </div>
-
-            <!-- Compact Daily Habits Quick Check-In Strip (renders only when habits exist) -->
-            <TodayHabitsStrip :date="selectedDate" @open-habits="emit('openHabits')" />
 
             <!-- Unified Chronological Stream + Directional Day Carousel + FLIP Reflow -->
             <Transition :name="daySlideDir === 'next' ? 't-day-next' : 't-day-prev'" mode="out-in">
@@ -944,115 +1001,266 @@ onBeforeUnmount(() => {
   border-radius: 50%;
 }
 
-/* Natural-Language Daily Summary Card */
-.wd-summary-box {
-  padding: 13px 16px;
-  border-radius: 13px;
-  border: 1px solid var(--ws-hairline);
-  background: color-mix(in srgb, var(--ws-card-subtle) 55%, var(--ws-card-bg));
+/* WWDC25 Interactive Snippets Deck (Overview Summary Card + Daily Habits Snippet) */
+.wd-snippets-deck {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.wd-summary-box {
+  --wd-r-outer: 20px;
+  --wd-r-inner: 13px;
+  padding: 13px 14px 12px;
+  border-radius: var(--wd-r-outer);
+  border: 1px solid var(--ws-hairline);
+  background: color-mix(in srgb, var(--ws-card-subtle) 58%, var(--ws-card-bg));
+  box-shadow: 0 2px 10px rgba(15, 16, 20, 0.03);
+  display: flex;
+  flex-direction: column;
   gap: 10px;
 }
 
-.wd-summary-sentence {
-  display: inline-flex;
+.wd-sum-head {
+  display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 2px;
+}
+
+.wd-sum-dialogue-wrap {
+  display: flex;
+  align-items: baseline;
   flex-wrap: wrap;
-  gap: 7px;
-  font-size: 13.5px;
-  font-weight: 540;
+  gap: 8px;
+  min-width: 0;
+}
+
+.wd-sum-dialogue {
+  font-size: 14.5px;
+  font-weight: 760;
+  letter-spacing: -0.015em;
+  line-height: 1.25;
   color: var(--ws-ink);
 }
 
-.wd-sum-conj {
+.wd-sum-progress {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--ws-stone-pill);
   color: var(--ws-ink-secondary);
-}
-
-.wd-sum-chip {
-  height: 26px;
-  padding: 0 9px;
-  border-radius: 8px;
-  border: 1px solid transparent;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font: inherit;
-  font-size: 12.5px;
-  font-weight: 640;
-  cursor: pointer;
-  transition: transform 120ms ease, border-color 140ms ease, filter 140ms ease;
-}
-
-.wd-sum-chip:active {
-  transform: scale(0.96);
-}
-
-.wd-sum-chip.rose {
-  background: color-mix(in srgb, #e84c3d 13%, transparent);
-  color: #d43d30;
-}
-
-.wd-sum-chip.slate {
-  background: color-mix(in srgb, var(--ws-ink) 8%, transparent);
-  color: var(--ws-ink-secondary);
-}
-
-.wd-sum-chip.amber {
-  background: color-mix(in srgb, #e59b28 16%, transparent);
-  color: #b8730c;
-}
-
-.wd-sum-chip.active {
-  border-color: currentColor;
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .wd-sum-clear {
-  border: 0;
-  background: transparent;
-  color: var(--ws-ink-muted);
-  font: inherit;
-  font-size: 12px;
-  text-decoration: underline;
-  cursor: pointer;
-}
-
-.wd-summary-whispers {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.wd-cd-whisper {
-  border: 0;
+  flex: none;
+  height: 24px;
+  padding: 0 10px;
   border-radius: 999px;
-  padding: 3px 9px;
+  border: 1px solid var(--ws-hairline-strong);
   background: var(--ws-card-bg);
-  border: 1px solid var(--ws-hairline);
   color: var(--ws-ink-secondary);
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
   font: inherit;
-  font-size: 11.5px;
+  font-size: 11px;
+  font-weight: 660;
   cursor: pointer;
+  transition: background-color var(--duration-quick, 150ms) var(--ease-smooth-out), color var(--duration-quick, 150ms) var(--ease-smooth-out);
 }
 
-.wd-cd-whisper.sub-due {
-  background: color-mix(in srgb, #e85d2a 11%, var(--ws-card-bg));
-  border-color: color-mix(in srgb, #e85d2a 24%, transparent);
-  color: #d4451a;
-}
-
-.wd-cd-whisper.sub-due strong {
-  color: #d4451a;
-}
-
-.wd-cd-whisper strong {
+.wd-sum-clear:hover {
   color: var(--ws-ink);
+  background: var(--ws-pill-hover);
+}
+
+/* 3 Concentric Glanceable Interactive KPI Action Tiles */
+.wd-sum-kpis {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.wd-sum-kpi {
+  --kpi-tint: #64748b;
+  padding: 9px 11px;
+  border-radius: var(--wd-r-inner);
+  border: 1px solid color-mix(in srgb, var(--kpi-tint) 16%, var(--ws-hairline));
+  background: color-mix(in srgb, var(--kpi-tint) 7%, var(--ws-card-bg));
+  color: var(--ws-ink);
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  transition:
+    transform var(--duration-quick, 150ms) var(--ease-smooth-out),
+    border-color var(--duration-quick, 150ms) var(--ease-smooth-out),
+    background-color var(--duration-quick, 150ms) var(--ease-smooth-out),
+    box-shadow var(--duration-quick, 150ms) var(--ease-smooth-out),
+    opacity var(--duration-quick, 150ms) var(--ease-smooth-out);
+}
+
+.wd-sum-kpi.rose {
+  --kpi-tint: #e84c3d;
+}
+
+.wd-sum-kpi.slate {
+  --kpi-tint: #4f46e5;
+}
+
+.wd-sum-kpi.amber {
+  --kpi-tint: #d97706;
+}
+
+.wd-sum-kpi.zero:not(.active) {
+  opacity: 0.72;
+}
+
+@media (hover: hover) {
+  .wd-sum-kpi:hover {
+    transform: translateY(-1px);
+    opacity: 1;
+    border-color: color-mix(in srgb, var(--kpi-tint) 42%, transparent);
+    background: color-mix(in srgb, var(--kpi-tint) 12%, var(--ws-card-bg));
+  }
+}
+
+.wd-sum-kpi:active {
+  transform: scale(0.97);
+}
+
+.wd-sum-kpi.active {
+  opacity: 1;
+  border-color: color-mix(in srgb, var(--kpi-tint) 68%, transparent);
+  background: color-mix(in srgb, var(--kpi-tint) 14%, var(--ws-card-bg));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--kpi-tint) 24%, transparent);
+}
+
+.wd-kpi-ico {
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--kpi-tint) 14%, transparent);
+  color: var(--kpi-tint);
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+}
+
+.wd-sum-kpi.active .wd-kpi-ico {
+  background: var(--kpi-tint);
+  color: #ffffff;
+}
+
+.wd-kpi-copy {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.wd-kpi-num {
+  font-size: 18px;
+  font-weight: 860;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  color: var(--ws-ink);
+}
+
+.wd-kpi-lbl {
+  font-size: 12px;
+  font-weight: 660;
+  color: var(--ws-ink-secondary);
+  white-space: nowrap;
+}
+
+/* Contextual WWDC25 Deep-Link Alert Mini-Snippets */
+.wd-context-snippets {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 8px;
+}
+
+.wd-ctx-tile {
+  --ctx-tint: #0ea5e9;
+  padding: 7px 10px;
+  border-radius: var(--wd-r-inner);
+  border: 1px solid color-mix(in srgb, var(--ctx-tint) 22%, var(--ws-hairline));
+  background: color-mix(in srgb, var(--ctx-tint) 7%, var(--ws-card-bg));
+  color: var(--ws-ink);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    transform var(--duration-quick, 150ms) var(--ease-smooth-out),
+    border-color var(--duration-quick, 150ms) var(--ease-smooth-out),
+    background-color var(--duration-quick, 150ms) var(--ease-smooth-out);
+}
+
+.wd-ctx-tile.sub-due {
+  --ctx-tint: #e85d2a;
+}
+
+.wd-ctx-tile.cd-next {
+  --ctx-tint: #6366f1;
+}
+
+@media (hover: hover) {
+  .wd-ctx-tile:hover {
+    transform: translateY(-1px);
+    border-color: color-mix(in srgb, var(--ctx-tint) 46%, transparent);
+    background: color-mix(in srgb, var(--ctx-tint) 12%, var(--ws-card-bg));
+  }
+}
+
+.wd-ctx-tile:active {
+  transform: scale(0.98);
+}
+
+.wd-ctx-ico {
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ctx-tint) 14%, transparent);
+  color: var(--ctx-tint);
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+}
+
+.wd-ctx-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--ws-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wd-ctx-badge {
+  flex: none;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ctx-tint) 14%, transparent);
+  color: var(--ctx-tint);
+  font-size: 11px;
+  font-weight: 760;
+}
+
+.wd-ctx-chev {
+  flex: none;
+  color: var(--ws-ink-muted);
+  opacity: 0.72;
+}
+
+.tabular {
   font-variant-numeric: tabular-nums;
 }
 
@@ -1247,25 +1455,28 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  max-width: min(360px, 100%);
-  padding: 8px 14px 8px 10px;
-  border-radius: 11px;
+  max-width: min(380px, 100%);
+  padding: 9px 14px 9px 10px;
+  border-radius: 14px;
   border: 1px solid var(--ws-hairline);
   background: var(--ws-card-bg);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03);
-  transition: border-color 140ms ease, box-shadow 140ms ease, transform 120ms ease;
+  box-shadow: 0 2px 10px rgba(15, 16, 20, 0.035);
+  transition:
+    border-color var(--duration-quick, 150ms) var(--ease-smooth-out),
+    box-shadow var(--duration-quick, 150ms) var(--ease-smooth-out),
+    transform var(--duration-quick, 150ms) var(--ease-smooth-out);
 }
 
 .wd-note-branch:hover .wd-note-card {
   border-color: var(--ws-hairline-strong);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+  box-shadow: 0 6px 16px rgba(15, 16, 20, 0.07);
   transform: translateY(-1px);
 }
 
 .wd-note-ico {
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
   background: var(--ws-card-subtle);
   color: var(--ws-ink-secondary);
   display: inline-flex;
@@ -1358,6 +1569,43 @@ onBeforeUnmount(() => {
 
   .wd-date-strip .wd-day-cell:nth-child(n + 8) {
     display: none;
+  }
+
+  .wd-sum-kpis {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .wd-sum-kpi {
+    padding: 8px 8px;
+    gap: 6px;
+  }
+
+  .wd-kpi-ico {
+    width: 24px;
+    height: 24px;
+    border-radius: 7px;
+  }
+
+  .wd-kpi-copy {
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .wd-kpi-num {
+    font-size: 16px;
+  }
+
+  .wd-kpi-lbl {
+    font-size: 10.5px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wd-sum-kpi,
+  .wd-ctx-tile,
+  .wd-note-card {
+    transition-duration: 0.01ms !important;
   }
 }
 </style>

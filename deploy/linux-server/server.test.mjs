@@ -145,4 +145,51 @@ test('api auth, sync merge, settings and webdav interop', async () => {
   assert.equal(setRes.status, 200);
   const doc2 = await (await fetch(`${base}/api/doc`, { headers: { Cookie: cookie } })).json();
   assert.equal(doc2.settings.calendar.view, 'gantt');
+
+  // Personal Account profile + connected devices tracking
+  const acc1 = await (await fetch(`${base}/api/account`, { headers: { Cookie: cookie } })).json();
+  assert.equal(acc1.username, 'tester');
+  assert.ok(acc1.devices.length >= 2, 'should track connected devices across WebDAV & API');
+
+  const patchAcc = await fetch(`${base}/api/account`, {
+    method: 'PATCH',
+    headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ displayName: 'Linze', title: '个人数字空间', passNumber: 'FC-07' }),
+  });
+  assert.equal(patchAcc.status, 200);
+  const patchAccJson = await patchAcc.json();
+  assert.equal(patchAccJson.account.displayName, 'Linze');
+  assert.equal(patchAccJson.account.passNumber, 'FC-07');
+
+  // Concurrent conflict detection via baseStamps & conflict resolution
+  const conflictSync = await fetch(`${base}/api/sync`, {
+    method: 'POST',
+    headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      device: 'Android Phone',
+      baseStamps: { tasks: { t2: 1500 }, groups: {}, dayMarks: {} },
+      view: {
+        tasks: {
+          t1: { id: 't1', title: 'PC Task', start: '2026-11-23', end: '2026-11-23', done: false, progress: 0 },
+          t2: { id: 't2', title: 'Android Edited Task', start: '2026-11-24', end: '2026-11-24', done: true, progress: 100 },
+        },
+        groups: {},
+        dayMarks: {},
+        meta: { tasks: { t1: 1000, t2: 2200 }, groups: {}, dayMarks: {} },
+      },
+    }),
+  });
+  assert.equal(conflictSync.status, 200);
+  const conflictJson = await conflictSync.json();
+  assert.equal(conflictJson.conflicts.length, 1);
+  assert.equal(conflictJson.conflicts[0].itemId, 't2');
+
+  const resolveRes = await fetch(`${base}/api/conflicts/${encodeURIComponent(conflictJson.conflicts[0].id)}/resolve`, {
+    method: 'POST',
+    headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ choice: 'local' }),
+  });
+  assert.equal(resolveRes.status, 200);
+  const resolvedJson = await resolveRes.json();
+  assert.equal(resolvedJson.conflicts.length, 0);
 });

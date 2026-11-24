@@ -2,8 +2,34 @@ import { reactive } from 'vue';
 import type { Collection, Doc, Settings } from '@/types';
 import { DEFAULT_SETTINGS, mergeDefaults } from '@/defaults';
 import { canonical, cloudView, mergeCloud, SYNCED, type CloudView } from '@/mobile/sync-model';
+import {
+  detectSyncConflicts,
+  extractBaseStamps,
+  type SyncBaseStamps,
+  type SyncConflict,
+} from '@/lib/syncConflicts';
+import { recordSyncConflicts } from '@/composables/syncConflicts';
 
 type Json = Record<string, unknown>;
+export interface AccountDeviceInfo {
+  id: string;
+  name: string;
+  platform: string;
+  lastSeenAt: number;
+  lastSyncAt: number | null;
+}
+export interface PersonalAccountProfile {
+  username: string;
+  displayName: string;
+  title: string;
+  passNumber: string;
+  avatarColor: string;
+  devices: AccountDeviceInfo[];
+  backupCount: number;
+  lastSyncAt: number | null;
+  lastSyncDevice: string | null;
+  conflictCount: number;
+}
 type SyncStatusPayload = {
   enabled: boolean;
   provider: string;
@@ -18,6 +44,7 @@ type SyncStatusPayload = {
 };
 
 const DOC_KEY = 'fluentcal.server.doc.v1';
+const BASE_KEY = 'fluentcal.server.sync-base.v1';
 const listeners = new Map<string, Set<(p: unknown) => void>>();
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v));
 
@@ -27,7 +54,28 @@ export const serverState = reactive({
   user: '',
   loginError: '',
   loggingIn: false,
+  account: null as PersonalAccountProfile | null,
 });
+
+function loadBaseStamps(): SyncBaseStamps | null {
+  try {
+    const raw = localStorage.getItem(BASE_KEY);
+    return raw ? (JSON.parse(raw) as SyncBaseStamps) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveBaseStamps(stamps: SyncBaseStamps) {
+  try {
+    localStorage.setItem(BASE_KEY, JSON.stringify(stamps));
+  } catch {
+    /* ignore */
+  }
+}
+
+let lastBaseStamps: SyncBaseStamps | null =
+  typeof localStorage !== 'undefined' ? loadBaseStamps() : null;
 
 export const serverModals = reactive({
   editor: null as null | Record<string, unknown>,
@@ -36,7 +84,7 @@ export const serverModals = reactive({
 
 const syncStatus: SyncStatusPayload = {
   enabled: true,
-  provider: '服务器',
+  provider: '个人云账号',
   syncing: false,
   lastSync: null,
   error: null,
@@ -129,10 +177,25 @@ let pushTimer: ReturnType<typeof setTimeout> | undefined;
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 let inFlight: Promise<void> | null = null;
 
-function absorbRemoteView(remoteView: CloudView, remoteSettings?: Partial<Settings>) {
+function absorbRemoteView(
+  remoteView: CloudView,
+  remoteSettings?: Partial<Settings>,
+  remoteDevice?: string | null,
+) {
   const local = clone(getDoc());
-  const before = canonical(cloudView(local));
-  const merged = mergeCloud(cloudView(local), remoteView);
+  const localCloud = cloudView(local);
+  const before = canonical(localCloud);
+
+  // Detect true concurrent conflicts against last synced base before merging
+  const localConflicts = detectSyncConflicts(localCloud, remoteView, lastBaseStamps, {
+    localDevice: deviceLabel(),
+    remoteDevice: remoteDevice || '云端其他设备',
+  });
+  if (localConflicts.length) {
+    recordSyncConflicts(localConflicts);
+  }
+
+  const merged = mergeCloud(localCloud, remoteView);
   local.tasks = merged.tasks;
   local.groups = merged.groups;
   local.dayMarks = merged.dayMarks;
@@ -151,6 +214,51 @@ function absorbRemoteView(remoteView: CloudView, remoteSettings?: Partial<Settin
     if (changed) emit('store://reload', { origin: 'server' });
     else emit('store://settings', { origin: 'server', settings: clone(local.settings) });
   }
+  lastBaseStamps = extractBaseStamps(merged);
+  saveBaseStamps(lastBaseStamps);
+}
+
+export async function fetchAccountProfile(): Promise<PersonalAccountProfile | null> {
+  if (!serverState.authenticated) return null;
+  try {
+    const res = await fetch('/api/account', { credentials: 'same-origin', cache: 'no-store' });
+    if (!res.ok) return null;
+    const data = (await res.json()) as PersonalAccountProfile;
+    serverState.account = data;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+export async function updateAccountProfile(patch: {
+  displayName?: string;
+  title?: string;
+  avatarColor?: string;
+  passNumber?: string;
+  currentPassword?: string;
+  newPassword?: string;
+}): Promise<{ ok: boolean; error?: string; account?: PersonalAccountProfile }> {
+  try {
+    const res = await fetch('/api/account', {
+      method: 'PATCH',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    const data = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      error?: string;
+      account?: PersonalAccountProfile;
+    };
+    if (!res.ok || !data.ok) {
+      return { ok: false, error: data.error || '更新账号资料失败' };
+    }
+    if (data.account) serverState.account = data.account;
+    return { ok: true, account: data.account };
+  } catch {
+    return { ok: false, error: '无法连接服务器，请检查网络' };
+  }
 }
 
 export async function syncWithServer(pushLocal = true): Promise<SyncStatusPayload> {
@@ -168,7 +276,13 @@ export async function syncWithServer(pushLocal = true): Promise<SyncStatusPayloa
         method: pushLocal ? 'POST' : 'GET',
         credentials: 'same-origin',
         headers: pushLocal ? { 'Content-Type': 'application/json' } : undefined,
-        body: pushLocal ? JSON.stringify({ view: cloudView(local), device: deviceLabel() }) : undefined,
+        body: pushLocal
+          ? JSON.stringify({
+              view: cloudView(local),
+              device: deviceLabel(),
+              baseStamps: lastBaseStamps,
+            })
+          : undefined,
         cache: 'no-store',
       });
       if (res.status === 401) {
@@ -182,8 +296,12 @@ export async function syncWithServer(pushLocal = true): Promise<SyncStatusPayloa
         savedAt: number | null;
         device: string | null;
         settings?: Partial<Settings>;
+        conflicts?: SyncConflict[];
       };
-      absorbRemoteView(data.view, data.settings);
+      absorbRemoteView(data.view, data.settings, data.device);
+      if (Array.isArray(data.conflicts) && data.conflicts.length > 0) {
+        recordSyncConflicts(data.conflicts);
+      }
       updateSyncStatus({
         syncing: false,
         pending: false,
@@ -248,7 +366,10 @@ export async function checkSession(): Promise<boolean> {
   } finally {
     serverState.checking = false;
   }
-  if (serverState.authenticated) startPolling();
+  if (serverState.authenticated) {
+    startPolling();
+    void fetchAccountProfile();
+  }
   return serverState.authenticated;
 }
 
@@ -260,7 +381,7 @@ export async function loginServer(user: string, password: string): Promise<boole
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user, password }),
+      body: JSON.stringify({ user, password, device: deviceLabel() }),
     });
     const data = (await res.json().catch(() => ({}))) as { ok?: boolean; user?: string; error?: string };
     if (!res.ok || !data.ok) {
@@ -270,7 +391,7 @@ export async function loginServer(user: string, password: string): Promise<boole
     serverState.authenticated = true;
     serverState.user = data.user || user;
     startPolling();
-    await syncWithServer(false);
+    await Promise.all([syncWithServer(false), fetchAccountProfile()]);
     return true;
   } catch {
     serverState.loginError = '无法连接服务器，请检查网络';
@@ -284,6 +405,7 @@ export async function logoutServer(): Promise<void> {
   await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => {});
   serverState.authenticated = false;
   serverState.user = '';
+  serverState.account = null;
 }
 
 export async function call<T>(cmd: string, args: Json = {}): Promise<T> {

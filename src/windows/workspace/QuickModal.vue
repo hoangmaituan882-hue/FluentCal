@@ -14,6 +14,7 @@ import {
   taskShortCode,
 } from '@/lib/taskMeta';
 import {
+  formatClockHHMM,
   formatHabitDayProgress,
   isHabitTask,
   resolveHabit,
@@ -469,11 +470,12 @@ async function pickResult(r: SearchResult) {
   if (r.kind === 'habit' && r.taskId) {
     const t = taskList.value.find((x) => x.id === r.taskId);
     if (t && isHabitTask(t)) {
+      const clock = formatClockHHMM();
       const nextMeta =
         t.habit.kind === 'check'
-          ? toggleCheckHabit(t.habit, now.value)
+          ? toggleCheckHabit(t.habit, now.value, clock)
           : t.habit.kind === 'count'
-            ? stepCountHabit(t.habit, now.value)
+            ? stepCountHabit(t.habit, now.value, undefined, clock)
             : toggleQuitRelapse(t.habit, now.value);
       await saveTask({ ...t, habitOnly: true, habit: nextMeta });
       const after = resolveHabit({ ...t, habit: nextMeta }, now.value, now.value, doc.settings.calendar.weekStart);

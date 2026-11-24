@@ -1,20 +1,25 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { FIcon, showMenu, type MenuItem } from '@/fluent';
-import type { HabitMeta, HabitTimeOfDay, ISODate, Task } from '@/types';
+import type { HabitMeta, HabitTimeOfDay, HabitWidgetStyle, ISODate, Task } from '@/types';
 import { addDays, addMonths, parts, startOfMonth, weekday, WEEKDAY_SHORT } from '@/lib/date';
 import {
-  buildHabitHeatmap,
   buildHabitMonthCells,
+  computeHabitTimeInsights,
   computeHabitWeekdayRates,
-  extractHeatmapMonthTicks,
+  defaultWidgetStyleForHabit,
+  formatClockHHMM,
   formatHabitDateWithWeekday,
   formatHabitDayProgress,
   getHabitMilestone,
+  getHabitWidgetStyleSpec,
   HABIT_KIND_META,
   HABIT_TIME_META,
+  HABIT_WIDGET_STYLES,
   isHabitTask,
+  nextHabitWidgetStyle,
   resolveHabit,
+  resolveHabitWidgetStyle,
   sampleHabitPayloads,
   stepCountHabit,
   toggleCheckHabit,
@@ -31,16 +36,39 @@ import { notify } from '../desk/state';
 import FushiTonalCard from './FushiTonalCard.vue';
 import HabitEditorModal from './HabitEditorModal.vue';
 import HabitEmblem from './HabitEmblem.vue';
+import HabitInsightsView from './HabitInsightsView.vue';
+import HabitWidgetBody from './HabitWidgetBody.vue';
+import HabitWidgetStyleGlyph from './HabitWidgetStyleGlyph.vue';
+import HabitWidgetStylePopover from './HabitWidgetStylePopover.vue';
 import NumberPop from './NumberPop.vue';
 import { useSlidingIndicator } from './useSlidingIndicator';
 
 type TimeFilter = 'all' | HabitTimeOfDay;
+type HabitPageTab = 'widgets' | 'insights';
 
 const { isPhone } = useViewport();
 const weekStart = computed<0 | 1>(() => doc.settings.calendar.weekStart);
 
+const pageTab = ref<HabitPageTab>('widgets');
+const pageTabDir = ref<'fwd' | 'back'>('fwd');
 const selectedDay = ref<ISODate>(now.value);
 const timeFilter = ref<TimeFilter>('all');
+
+function setPageTab(next: HabitPageTab) {
+  if (pageTab.value === next) return;
+  closeStylePopover();
+  clearHoverHud();
+  pageTabDir.value = next === 'insights' ? 'fwd' : 'back';
+  pageTab.value = next;
+}
+
+// Reactive live minute clock (0..1439) for fixed time-window countdown widgets
+function readNowMin(): number {
+  const d = new Date();
+  return d.getHours() * 60 + d.getMinutes();
+}
+const nowMin = ref<number>(readNowMin());
+let clockTimer: ReturnType<typeof setInterval> | null = null;
 
 // Editor modal state
 const editorOpen = ref(false);
@@ -78,12 +106,28 @@ interface HoverHudState {
 const hoverHud = ref<HoverHudState | null>(null);
 let hoverTimer: ReturnType<typeof setTimeout> | null = null;
 
+// Sliding indicator for Primary Page Tab (小组件 | 数据洞察)
+const pageTabRef = ref<HTMLElement>();
+const { style: tabPillStyle, ready: tabPillReady, visible: tabPillVisible } = useSlidingIndicator(
+  pageTabRef,
+  '.hv-tab-btn.active',
+  [pageTab],
+);
+
 // Sliding indicator for Time-of-Day filter
 const timeSegRef = ref<HTMLElement>();
 const { style: timePillStyle, ready: timePillReady, visible: timePillVisible } = useSlidingIndicator(
   timeSegRef,
   '.hv-seg-btn.active',
-  [timeFilter],
+  [timeFilter, pageTab],
+);
+
+// Sliding indicator for 7-Day Quick Backfill Ribbon inside Hero Card
+const sevenDayRef = ref<HTMLElement>();
+const { style: dayPillStyle, ready: dayPillReady, visible: dayPillVisible } = useSlidingIndicator(
+  sevenDayRef,
+  '.hv-d-pill.active',
+  [selectedDay, pageTab, isPhone],
 );
 
 const isTodaySelected = computed(() => selectedDay.value === now.value);
@@ -150,15 +194,134 @@ const heroRingOffset = computed(() => HERO_RING_C * (1 - selectedDayStats.value.
 
 const heatmapWeeks = computed(() => (isPhone.value ? 12 : 16));
 
-const heatmapByHabitId = computed(() => {
-  const map = new Map<string, { grid: HabitHeatmapCell[][]; ticks: Array<{ col: number; label: string }> }>();
-  for (const h of visibleHabits.value) {
-    const grid = buildHabitHeatmap(h.meta, h.task.start, now.value, heatmapWeeks.value, weekStart.value);
-    const ticks = extractHeatmapMonthTicks(grid);
-    map.set(h.task.id, { grid, ticks });
+// Live hover-preview overrides & Visual macOS Widget Gallery Popover state
+const previewStyleMap = ref<Record<string, HabitWidgetStyle>>({});
+const stylePopHabitId = ref<string | null>(null);
+const stylePopAnchorRect = ref<DOMRect | null>(null);
+const stylePopCardRect = ref<DOMRect | null>(null);
+const styleSettledId = ref<string | null>(null);
+let settleTimer: ReturnType<typeof setTimeout> | null = null;
+
+const stylePopHabit = computed<ResolvedHabit | null>(() =>
+  stylePopHabitId.value
+    ? (allHabits.value.find((h) => h.task.id === stylePopHabitId.value) ?? null)
+    : null,
+);
+
+function effectiveWidgetStyle(h: ResolvedHabit): HabitWidgetStyle {
+  return previewStyleMap.value[h.task.id] ?? resolveHabitWidgetStyle(h.meta);
+}
+
+function isStylePreviewing(h: ResolvedHabit): boolean {
+  const pv = previewStyleMap.value[h.task.id];
+  return !!pv && pv !== resolveHabitWidgetStyle(h.meta);
+}
+
+function setStylePreview(taskId: string, style: HabitWidgetStyle | null) {
+  const next = { ...previewStyleMap.value };
+  if (style) next[taskId] = style;
+  else delete next[taskId];
+  previewStyleMap.value = next;
+}
+
+function triggerStyleSettled(taskId: string) {
+  if (settleTimer) clearTimeout(settleTimer);
+  styleSettledId.value = taskId;
+  settleTimer = setTimeout(() => {
+    styleSettledId.value = null;
+    settleTimer = null;
+  }, 340);
+}
+
+function closeStylePopover() {
+  if (stylePopHabitId.value) {
+    setStylePreview(stylePopHabitId.value, null);
   }
-  return map;
-});
+  stylePopHabitId.value = null;
+  stylePopAnchorRect.value = null;
+  stylePopCardRect.value = null;
+}
+
+async function applyWidgetStyle(h: ResolvedHabit, style: HabitWidgetStyle, showToast = false) {
+  const prev = resolveHabitWidgetStyle(h.meta);
+  closeStylePopover();
+  setStylePreview(h.task.id, null);
+  if (prev !== style) {
+    await mutateHabit(h, { ...h.meta, widgetStyle: style });
+  }
+  triggerStyleSettled(h.task.id);
+  if (showToast) {
+    notify(`「${h.task.title}」切换为 ${getHabitWidgetStyleSpec(style).label}`, false);
+  }
+}
+
+async function cycleWidgetStyle(h: ResolvedHabit, step = 1) {
+  const cur = resolveHabitWidgetStyle(h.meta);
+  const next = nextHabitWidgetStyle(cur, step);
+  await applyWidgetStyle(h, next, true);
+}
+
+function buildWidgetStyleMenuItems(h: ResolvedHabit): MenuItem[] {
+  const cur = resolveHabitWidgetStyle(h.meta);
+  return HABIT_WIDGET_STYLES.map((st) => ({
+    key: `ws:${st.key}`,
+    label: `${st.label}`,
+    radio: true,
+    checked: cur === st.key,
+    onHover: () => setStylePreview(h.task.id, st.key),
+    action: () => void applyWidgetStyle(h, st.key),
+  }));
+}
+
+let stylePopOpenScrollTop = 0;
+
+function openStylePopover(h: ResolvedHabit, event: MouseEvent) {
+  clearHoverHud();
+  // Power-user shortcut: Alt/Option+Click cycles widget style immediately
+  if (event.altKey) {
+    void cycleWidgetStyle(h, event.shiftKey ? -1 : 1);
+    return;
+  }
+  if (stylePopHabitId.value === h.task.id) {
+    closeStylePopover();
+    return;
+  }
+  if (stylePopHabitId.value) {
+    setStylePreview(stylePopHabitId.value, null);
+  }
+  const anchor = event.currentTarget as HTMLElement | null;
+  stylePopAnchorRect.value = anchor ? anchor.getBoundingClientRect() : null;
+  const cardEl = anchor?.closest('.hv-card') as HTMLElement | null;
+  stylePopCardRect.value = cardEl ? cardEl.getBoundingClientRect() : null;
+  const scrollEl = anchor?.closest('.hv-scroll') as HTMLElement | null;
+  stylePopOpenScrollTop = scrollEl ? scrollEl.scrollTop : 0;
+  stylePopHabitId.value = h.task.id;
+}
+
+function onScrollClearOverlays(e: Event) {
+  clearHoverHud();
+  if (!stylePopHabitId.value || isPhone.value) return;
+  const scrollEl = e.currentTarget as HTMLElement | null;
+  // Ignore tiny layout reflow adjustments during live widget preview; dismiss only on genuine user scroll
+  if (scrollEl && Math.abs(scrollEl.scrollTop - stylePopOpenScrollTop) > 14) {
+    closeStylePopover();
+  }
+}
+
+async function onWidgetToggleDay(h: ResolvedHabit, iso: ISODate) {
+  if (iso > now.value) return;
+  if (h.meta.kind === 'count') {
+    const cur = typeof h.meta.logs?.[iso] === 'number' ? (h.meta.logs[iso] as number) : 0;
+    const target = Math.max(1, h.meta.target || 1);
+    const nextLogs = { ...(h.meta.logs ?? {}) };
+    if (cur >= target) delete nextLogs[iso];
+    else nextLogs[iso] = target;
+    await mutateHabit(h, { ...h.meta, logs: nextLogs });
+    if (cur < target) triggerPulse(h.task.id);
+    return;
+  }
+  await onPrimaryAction(h, iso);
+}
 
 const detailHabit = computed<ResolvedHabit | null>(() => {
   if (!detailHabitId.value) return null;
@@ -193,6 +356,12 @@ const detailWeekdayRates = computed(() => {
   const h = detailHabit.value;
   if (!h) return [];
   return computeHabitWeekdayRates(h.meta, h.task.start, now.value, weekStart.value);
+});
+
+const detailTimeInsights = computed(() => {
+  const h = detailHabit.value;
+  if (!h) return null;
+  return computeHabitTimeInsights([h], now.value);
 });
 
 const detailBestWeekdayLabel = computed(() => {
@@ -281,11 +450,12 @@ async function mutateHabit(h: ResolvedHabit, nextMeta: HabitMeta) {
 
 async function onPrimaryAction(h: ResolvedHabit, iso = selectedDay.value, showToast = false) {
   const wasDone = h.day.state === 'done';
+  const clock = iso === now.value ? formatClockHHMM() : undefined;
   let nextMeta: HabitMeta;
   if (h.meta.kind === 'check') {
-    nextMeta = toggleCheckHabit(h.meta, iso);
+    nextMeta = toggleCheckHabit(h.meta, iso, clock);
   } else if (h.meta.kind === 'count') {
-    nextMeta = stepCountHabit(h.meta, iso);
+    nextMeta = stepCountHabit(h.meta, iso, undefined, clock);
   } else {
     nextMeta = toggleQuitRelapse(h.meta, iso);
   }
@@ -308,7 +478,8 @@ async function onPrimaryAction(h: ResolvedHabit, iso = selectedDay.value, showTo
 
 async function onCountStep(h: ResolvedHabit, delta: number, iso = selectedDay.value) {
   const wasDone = h.day.state === 'done';
-  const nextMeta = stepCountHabit(h.meta, iso, delta);
+  const clock = iso === now.value ? formatClockHHMM() : undefined;
+  const nextMeta = stepCountHabit(h.meta, iso, delta, clock);
   await mutateHabit(h, nextMeta);
   if (delta > 0) {
     triggerPulse(h.task.id);
@@ -480,6 +651,11 @@ function openCardMenu(h: ResolvedHabit, event: MouseEvent, asAnchor = false) {
       shortcut: '↵',
       action: () => openDetail(h),
     },
+    {
+      label: '小组件样式',
+      icon: 'board',
+      children: buildWidgetStyleMenuItems(h),
+    },
     { separator: true },
     {
       label: '编辑习惯…',
@@ -513,7 +689,10 @@ function openCardMenu(h: ResolvedHabit, event: MouseEvent, asAnchor = false) {
     },
   ];
   const at = asAnchor ? (event.currentTarget as HTMLElement) : { x: event.clientX, y: event.clientY };
-  void showMenu(items, at, asAnchor ? { placement: 'bottom-end' } : undefined);
+  void showMenu(items, at, {
+    ...(asAnchor ? { placement: 'bottom-end' } : {}),
+    onClose: () => setStylePreview(h.task.id, null),
+  });
 }
 
 async function seedSampleHabits() {
@@ -521,7 +700,7 @@ async function seedSampleHabits() {
   for (const p of list) {
     await addTask(p);
   }
-  notify('已导入 5 项习惯示例，按 1–5 可快速打卡', false);
+  notify('已导入 6 项精致习惯小组件，按 1–6 可快速打卡', false);
 }
 
 function isEditableTarget(el: EventTarget | null): boolean {
@@ -564,7 +743,7 @@ function onWindowKeyDown(e: KeyboardEvent) {
     return;
   }
 
-  if (editorOpen.value) return;
+  if (editorOpen.value || stylePopHabitId.value) return;
   if (isEditableTarget(e.target)) return;
   // Don't hijack keys when another global modal (e.g. Ctrl+K QuickModal) is open
   if (document.querySelector('.ws-modal-backdrop')) return;
@@ -640,6 +819,9 @@ function onWindowKeyDown(e: KeyboardEvent) {
   } else if (e.key === 'e' || e.key === 'E') {
     e.preventDefault();
     openEdit(focused);
+  } else if (e.key === 'w' || e.key === 'W') {
+    e.preventDefault();
+    void cycleWidgetStyle(focused, e.shiftKey ? -1 : 1);
   }
 }
 
@@ -656,12 +838,17 @@ onMounted(() => {
   window.addEventListener('keydown', onWindowKeyDown);
   window.addEventListener('keyup', onWindowKeyUp);
   window.addEventListener('blur', onWindowBlur);
+  clockTimer = setInterval(() => {
+    nowMin.value = readNowMin();
+  }, 30_000);
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onWindowKeyDown);
   window.removeEventListener('keyup', onWindowKeyUp);
   window.removeEventListener('blur', onWindowBlur);
+  if (clockTimer) clearInterval(clockTimer);
+  if (settleTimer) clearTimeout(settleTimer);
   clearHoverHud();
   for (const t of pulseTimers.values()) clearTimeout(t);
   pulseTimers.clear();
@@ -678,8 +865,45 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="hv-head-right">
-        <!-- Time-of-Day Liquid Sliding Switcher -->
-        <div ref="timeSegRef" class="hv-seg" role="tablist" aria-label="习惯时段筛选">
+        <!-- Primary View Switcher: Widgets | Data Insights -->
+        <div ref="pageTabRef" class="hv-seg hv-tab-seg" role="tablist" aria-label="习惯页面视图切换">
+          <span
+            v-if="tabPillVisible"
+            class="ws-slide-pill hv-seg-pill"
+            :class="{ 'no-anim': !tabPillReady }"
+            :style="tabPillStyle"
+            aria-hidden="true"
+          />
+          <button
+            type="button"
+            role="tab"
+            :aria-selected="pageTab === 'widgets'"
+            class="hv-seg-btn hv-tab-btn"
+            :class="{ active: pageTab === 'widgets' }"
+            @click="setPageTab('widgets')"
+          >
+            小组件
+          </button>
+          <button
+            type="button"
+            role="tab"
+            :aria-selected="pageTab === 'insights'"
+            class="hv-seg-btn hv-tab-btn"
+            :class="{ active: pageTab === 'insights' }"
+            @click="setPageTab('insights')"
+          >
+            数据洞察
+          </button>
+        </div>
+
+        <!-- Time-of-Day Liquid Sliding Switcher (Shown in Widgets view on desktop) -->
+        <div
+          v-if="pageTab === 'widgets' && !isPhone"
+          ref="timeSegRef"
+          class="hv-seg"
+          role="tablist"
+          aria-label="习惯时段筛选"
+        >
           <span
             v-if="timePillVisible"
             class="ws-slide-pill hv-seg-pill"
@@ -715,35 +939,47 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <!-- First-Run Empty Starter State -->
-    <div v-if="!allHabits.length && !archivedHabits.length" class="hv-empty-stage">
-      <FushiTonalCard variant="hero" class="hv-empty-card" tint="#10A37F" watermark="每日习惯">
-        <template #emblem>
-          <div class="hv-empty-emblem">
-            <FIcon name="flame" :size="28" />
+    <!-- Directional Page Side-by-Side Stage (Empty | Data Insights | macOS Multi-Widget Grid) -->
+    <Transition :name="pageTabDir === 'fwd' ? 'hv-page-fwd' : 'hv-page-back'" mode="out-in">
+      <!-- First-Run Empty Starter State -->
+      <div v-if="!allHabits.length && !archivedHabits.length" key="empty" class="hv-empty-stage">
+        <FushiTonalCard variant="hero" class="hv-empty-card" tint="#10A37F" watermark="每日习惯">
+          <template #emblem>
+            <div class="hv-empty-emblem">
+              <FIcon name="flame" :size="28" />
+            </div>
+          </template>
+          <div class="hv-empty-copy">
+            <h2>用 macOS 风格小组件，温和而坚定地养成好习惯</h2>
+            <p>
+              内置时段倒计时、光谱刻度、仪表标尺、基准横条、七日圆环、周度柱阵与里程轨迹 7 套原生小组件，自动记录每次打卡时刻并生成 24 小时节律数据洞察。
+            </p>
+            <div class="hv-empty-acts">
+              <button type="button" class="hv-btn-solid" @click="openCreate">
+                <FIcon name="add" :size="14" />
+                <span>创建第一个习惯</span>
+              </button>
+              <button type="button" class="hv-btn-soft" @click="seedSampleHabits">
+                <FIcon name="sparkles" :size="14" />
+                <span>一键导入 6 项精致示例</span>
+              </button>
+            </div>
           </div>
-        </template>
-        <div class="hv-empty-copy">
-          <h2>用可视化热力矩阵，温和而坚定地养成好习惯</h2>
-          <p>
-            支持普通打卡、定量计数（喝水/阅读时长）与戒除习惯，采用反焦虑「习惯强度」算法与请假跳过保护，漏一天不清零。桌面、网页与安卓实时云同步。
-          </p>
-          <div class="hv-empty-acts">
-            <button type="button" class="hv-btn-solid" @click="openCreate">
-              <FIcon name="add" :size="14" />
-              <span>创建第一个习惯</span>
-            </button>
-            <button type="button" class="hv-btn-soft" @click="seedSampleHabits">
-              <FIcon name="sparkles" :size="14" />
-              <span>一键导入 5 项示例体验</span>
-            </button>
-          </div>
-        </div>
-      </FushiTonalCard>
-    </div>
+        </FushiTonalCard>
+      </div>
 
-    <!-- Main HabitKit × Fushi Card Grid Stage -->
-    <div v-else class="hv-scroll" @scroll="clearHoverHud">
+      <!-- Data Insights Bento Telemetry Stage -->
+      <div v-else-if="pageTab === 'insights'" key="insights" class="hv-scroll">
+        <HabitInsightsView
+          :habits="allHabits"
+          :today="now"
+          :is-phone="isPhone"
+          @open-habit="openDetail"
+        />
+      </div>
+
+      <!-- Main macOS Multi-Widget Fushi Card Grid Stage -->
+      <div v-else key="widgets" class="hv-scroll" @scroll="onScrollClearOverlays">
       <!-- Top Hero Overview Card + Streaks Completion Ring + 7-Day Quick Backfill Ribbon -->
       <FushiTonalCard
         as="section"
@@ -795,8 +1031,15 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <!-- 7-Day Interactive Backfill Strip -->
-          <div class="hv-7day" role="radiogroup" aria-label="近 7 天快速补签">
+          <!-- 7-Day Interactive Backfill Strip with Liquid Sliding Pill -->
+          <div ref="sevenDayRef" class="hv-7day" role="radiogroup" aria-label="近 7 天快速补签">
+            <span
+              v-if="dayPillVisible"
+              class="ws-slide-pill hv-day-slide"
+              :class="{ 'no-anim': !dayPillReady }"
+              :style="dayPillStyle"
+              aria-hidden="true"
+            />
             <button
               v-for="d in recent7Days"
               :key="d.iso"
@@ -823,8 +1066,8 @@ onBeforeUnmount(() => {
         </template>
       </FushiTonalCard>
 
-      <!-- HabitKit 2-Column Fushi Card Grid -->
-      <div class="hv-grid">
+      <!-- HabitKit 2-Column Fluid FLIP Fushi Card Grid -->
+      <TransitionGroup name="hv-card-flow" tag="div" class="hv-grid">
         <FushiTonalCard
           v-for="(h, idx) in visibleHabits"
           :key="h.task.id"
@@ -837,6 +1080,8 @@ onBeforeUnmount(() => {
             focused: focusedHabitId === h.task.id,
             dragging: draggingId === h.task.id,
             'drag-over': dragOverId === h.task.id,
+            'style-open': stylePopHabitId === h.task.id,
+            'style-settled': styleSettledId === h.task.id,
           }"
           :style="{ '--stagger-idx': Math.min(idx, 6) }"
           :tint="h.meta.color"
@@ -936,57 +1181,39 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <!-- Quantitative Progress Bar (Count habits get an instant tactile liquid fill bar) -->
-          <div v-if="h.meta.kind === 'count'" class="hv-count-track" aria-hidden="true">
+          <!-- Slim Quantitative Progress Bar (shown only when widget style doesn't already render a dedicated count ruler/bars/spectrum) -->
+          <div
+            v-if="
+              h.meta.kind === 'count' &&
+              effectiveWidgetStyle(h) !== 'gauge' &&
+              effectiveWidgetStyle(h) !== 'bars' &&
+              effectiveWidgetStyle(h) !== 'spectrum'
+            "
+            class="hv-count-track"
+            aria-hidden="true"
+          >
             <div class="hv-count-fill" :style="{ width: `${Math.round(h.day.ratio * 100)}%` }" />
           </div>
 
-          <!-- Subtle Month Axis Ticks above HabitKit Contribution Heatmap -->
-          <div
-            class="hv-hm-months"
-            :style="{ '--hm-cols': heatmapWeeks }"
-            aria-hidden="true"
-          >
-            <span
-              v-for="tick in heatmapByHabitId.get(h.task.id)?.ticks ?? []"
-              :key="tick.col"
-              class="hv-hm-month-lbl"
-              :style="{ gridColumn: `${tick.col + 1} / span 3` }"
-            >
-              {{ tick.label }}
-            </span>
-          </div>
+          <!-- Tailored macOS Interactive Habit Widget Body (Window / Spectrum / Gauge / Bars / Rings / Pillars / Journey / Optional Heatmap) -->
+          <HabitWidgetBody
+            :habit="h"
+            :widget-style="effectiveWidgetStyle(h)"
+            :selected-day="selectedDay"
+            :today="now"
+            :week-start="weekStart"
+            :heatmap-weeks="heatmapWeeks"
+            :now-min="nowMin"
+            :previewing="isStylePreviewing(h)"
+            :preview-label="getHabitWidgetStyleSpec(effectiveWidgetStyle(h)).label"
+            @open-detail="openDetail(h)"
+            @toggle-day="(iso) => onWidgetToggleDay(h, iso)"
+            @select-day="(iso) => (selectedDay = iso)"
+            @cell-enter="(cell, ev) => onCellPointerEnter(h, cell, ev)"
+            @cell-leave="clearHoverHud"
+          />
 
-          <!-- HabitKit Signature GitHub-Style Contribution Heatmap Matrix -->
-          <div
-            class="hv-heatmap"
-            role="button"
-            tabindex="0"
-            :aria-label="`查看 ${h.task.title} 完整月历与补签`"
-            @click="openDetail(h)"
-            @keydown.enter.prevent="openDetail(h)"
-            @pointerleave="clearHoverHud"
-          >
-            <div
-              v-for="(col, ci) in heatmapByHabitId.get(h.task.id)?.grid ?? []"
-              :key="ci"
-              class="hv-hm-col"
-            >
-              <span
-                v-for="cell in col"
-                :key="cell.iso"
-                class="hv-hm-cell"
-                :class="[
-                  `lv-${cell.level}`,
-                  cell.state,
-                  { today: cell.isToday, sel: cell.iso === selectedDay },
-                ]"
-                @pointerenter="onCellPointerEnter(h, cell, $event)"
-              />
-            </div>
-          </div>
-
-          <!-- Card Footer: Anti-Guilt Stats + Quick Skip, Edit & Native Context Menu -->
+          <!-- Card Footer: Anti-Guilt Stats + Visual Widget Gallery Switcher, Skip, Edit & Native Context Menu -->
           <div class="hv-card-foot">
             <div class="hv-foot-stats tabular">
               <span class="hv-stat-pill">
@@ -997,6 +1224,27 @@ onBeforeUnmount(() => {
             </div>
 
             <div class="hv-foot-tools">
+              <button
+                type="button"
+                class="hv-mini-tool hv-style-btn"
+                :class="{
+                  active: stylePopHabitId === h.task.id,
+                  previewing: isStylePreviewing(h),
+                }"
+                data-hv-style-trigger
+                :aria-expanded="stylePopHabitId === h.task.id"
+                :title="`切换小组件视图（当前：${getHabitWidgetStyleSpec(effectiveWidgetStyle(h)).label} · Alt+点击快速轮换）`"
+                aria-label="切换小组件样式"
+                @click="openStylePopover(h, $event)"
+              >
+                <HabitWidgetStyleGlyph :style-key="effectiveWidgetStyle(h)" compact class="hv-style-glyph" />
+                <Transition name="hv-lbl-swap" mode="out-in">
+                  <span :key="effectiveWidgetStyle(h)" class="hv-style-lbl">
+                    {{ getHabitWidgetStyleSpec(effectiveWidgetStyle(h)).short }}
+                  </span>
+                </Transition>
+                <FIcon name="chevronDown" :size="9" class="hv-style-caret" />
+              </button>
               <button
                 type="button"
                 class="hv-mini-tool"
@@ -1027,38 +1275,44 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </FushiTonalCard>
-      </div>
+      </TransitionGroup>
 
       <div v-if="!visibleHabits.length && allHabits.length" class="hv-filter-empty">
         当前时段暂无习惯，可切换「全部」查看或新建一条习惯
       </div>
 
-      <!-- Discreet Collapsible Archived Habits Drawer (Only shown when archived habits exist) -->
+      <!-- Discreet Accordion Archived Habits Drawer (Grid 0fr->1fr + Symmetric Chevron Flip) -->
       <section v-if="archivedHabits.length" class="hv-archived-box">
         <button
           type="button"
           class="hv-archived-toggle"
+          :class="{ open: archivedExpanded }"
           :aria-expanded="archivedExpanded"
           @click="archivedExpanded = !archivedExpanded"
         >
-          <FIcon :name="archivedExpanded ? 'chevronDown' : 'chevronRight'" :size="12" />
+          <FIcon name="chevronDown" :size="12" class="hv-acc-chev" />
           <span>已归档习惯</span>
           <span class="hv-archived-cnt tabular">{{ archivedHabits.length }}</span>
         </button>
 
-        <div v-if="archivedExpanded" class="hv-archived-list">
-          <div v-for="ah in archivedHabits" :key="ah.task.id" class="hv-archived-row">
-            <HabitEmblem :icon-key="ah.meta.iconKey" :color="ah.meta.color" :size="28" :radius="8" />
-            <div class="hv-archived-copy">
-              <strong>{{ ah.task.title }}</strong>
-              <span class="tabular">累计 {{ ah.totalDoneDays }} 天 · 最长连续 {{ ah.bestStreak }} 天</span>
+        <div class="hv-acc-panel" :class="{ open: archivedExpanded }">
+          <div class="hv-acc-inner">
+            <div class="hv-archived-list">
+              <div v-for="ah in archivedHabits" :key="ah.task.id" class="hv-archived-row">
+                <HabitEmblem :icon-key="ah.meta.iconKey" :color="ah.meta.color" :size="28" :radius="8" />
+                <div class="hv-archived-copy">
+                  <strong>{{ ah.task.title }}</strong>
+                  <span class="tabular">累计 {{ ah.totalDoneDays }} 天 · 最长连续 {{ ah.bestStreak }} 天</span>
+                </div>
+                <button type="button" class="hv-archived-act" @click="restoreHabit(ah)">恢复</button>
+                <button type="button" class="hv-archived-act danger" @click="removeHabit(ah)">删除</button>
+              </div>
             </div>
-            <button type="button" class="hv-archived-act" @click="restoreHabit(ah)">恢复</button>
-            <button type="button" class="hv-archived-act danger" @click="removeHabit(ah)">删除</button>
           </div>
         </div>
       </section>
-    </div>
+      </div>
+    </Transition>
 
     <!-- Teleported macOS Frosted Glass Floating Heatmap HUD Tooltip -->
     <Teleport to="body">
@@ -1164,6 +1418,15 @@ onBeforeUnmount(() => {
                 <span class="hd-wd-lbl">{{ bar.label }}</span>
               </div>
             </div>
+            <!-- Compact Chronotype Timing Telemetry Strip inside Detail Modal -->
+            <div
+              v-if="detailTimeInsights && detailTimeInsights.totalLogs > 0"
+              class="hd-time-strip tabular"
+            >
+              <span>最常 <strong>{{ detailTimeInsights.peakHour?.rangeLabel ?? '--' }}</strong></span>
+              <span>最早 <strong>{{ detailTimeInsights.earliest?.time ?? '--' }}</strong></span>
+              <span>最迟 <strong>{{ detailTimeInsights.latest?.time ?? '--' }}</strong></span>
+            </div>
           </div>
 
           <!-- Interactive Full Monthly Backfill Calendar -->
@@ -1234,6 +1497,21 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </Transition>
+
+    <!-- Visual macOS Widget Gallery Switcher Popover (Anchored on Desktop, Floating Sheet on Phone) -->
+    <HabitWidgetStylePopover
+      :open="!!stylePopHabit"
+      :anchor-rect="stylePopAnchorRect"
+      :card-rect="stylePopCardRect"
+      :current-style="stylePopHabit ? resolveHabitWidgetStyle(stylePopHabit.meta) : 'window'"
+      :recommended-style="stylePopHabit ? defaultWidgetStyleForHabit(stylePopHabit.meta) : 'window'"
+      :tint="stylePopHabit?.meta.color ?? '#10A37F'"
+      :habit-title="stylePopHabit?.task.title ?? ''"
+      :is-phone="isPhone"
+      @preview="(st) => stylePopHabit && setStylePreview(stylePopHabit.task.id, st)"
+      @select="(st) => stylePopHabit && applyWidgetStyle(stylePopHabit, st)"
+      @close="closeStylePopover"
+    />
 
     <!-- Create / Edit Zero-Scroll Modal -->
     <HabitEditorModal
@@ -1427,6 +1705,41 @@ onBeforeUnmount(() => {
   color: var(--fc-ink);
 }
 
+/* Directional Page Side-by-Side Transition (小组件 ↔ 数据洞察, transitions-polish symmetric 250ms) */
+.hv-page-fwd-enter-active,
+.hv-page-fwd-leave-active,
+.hv-page-back-enter-active,
+.hv-page-back-leave-active {
+  transition:
+    opacity var(--duration-fast, 250ms) var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1)),
+    transform var(--duration-fast, 250ms) var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1)),
+    filter var(--duration-fast, 250ms) var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1));
+}
+.hv-page-fwd-leave-active,
+.hv-page-back-leave-active {
+  transition-duration: var(--duration-quick, 150ms);
+}
+.hv-page-fwd-enter-from {
+  opacity: 0;
+  filter: blur(var(--blur-medium, 3px));
+  transform: translateX(var(--distance-base, 8px));
+}
+.hv-page-fwd-leave-to {
+  opacity: 0;
+  filter: blur(var(--blur-small, 2px));
+  transform: translateX(calc(var(--distance-base, 8px) * -1));
+}
+.hv-page-back-enter-from {
+  opacity: 0;
+  filter: blur(var(--blur-medium, 3px));
+  transform: translateX(calc(var(--distance-base, 8px) * -1));
+}
+.hv-page-back-leave-to {
+  opacity: 0;
+  filter: blur(var(--blur-small, 2px));
+  transform: translateX(var(--distance-base, 8px));
+}
+
 /* Main Scrollable Content */
 .hv-scroll {
   flex: 1;
@@ -1542,8 +1855,9 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 
-/* 7-Day Interactive Backfill Strip */
+/* 7-Day Interactive Backfill Strip with Liquid Sliding Pill */
 .hv-7day {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -1552,7 +1866,15 @@ onBeforeUnmount(() => {
   background: color-mix(in srgb, var(--fc-ink) 8%, transparent);
 }
 
+.hv-day-slide {
+  border-radius: 10px;
+  background: var(--fc-fill);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--fc-fill) 32%, transparent);
+}
+
 .hv-d-pill {
+  position: relative;
+  z-index: 1;
   width: 36px;
   height: 40px;
   border: 0;
@@ -1572,13 +1894,17 @@ onBeforeUnmount(() => {
     transform var(--duration-quick, 150ms) var(--ease-smooth-out);
 }
 
-.hv-d-pill:hover {
+.hv-d-pill:hover:not(.active) {
   background: color-mix(in srgb, var(--fc-ink) 8%, transparent);
   color: var(--fc-ink);
 }
 
+.hv-d-pill:active {
+  transform: scale(0.94);
+}
+
 .hv-d-pill.active {
-  background: var(--fc-fill);
+  background: transparent;
   color: var(--fc-on-fill, #ffffff);
 }
 
@@ -1623,6 +1949,53 @@ onBeforeUnmount(() => {
   box-shadow:
     0 0 0 2.2px var(--fc-fill),
     var(--fc-shadow);
+}
+
+.hv-card.style-open {
+  box-shadow:
+    0 0 0 1.8px color-mix(in srgb, var(--fc-fill) 62%, transparent),
+    var(--fc-shadow);
+}
+
+.hv-card.style-settled {
+  animation: hv-style-settle 320ms var(--ease-bounce, cubic-bezier(0.34, 1.36, 0.64, 1));
+}
+
+@keyframes hv-style-settle {
+  0% {
+    transform: scale(0.986);
+  }
+  55% {
+    transform: scale(1.008);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* Fluid FLIP Card Grid Reorder & Filter Transitions */
+.hv-card-flow-move {
+  transition: transform var(--duration-fast, 250ms) var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1));
+}
+.hv-card-flow-enter-active {
+  transition:
+    opacity var(--duration-fast, 250ms) var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1)),
+    transform var(--duration-fast, 250ms) var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1)),
+    filter var(--duration-fast, 250ms) var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1));
+}
+.hv-card-flow-leave-active {
+  transition:
+    opacity var(--duration-quick, 150ms) var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1)),
+    transform var(--duration-quick, 150ms) var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1));
+}
+.hv-card-flow-enter-from {
+  opacity: 0;
+  filter: blur(var(--blur-small, 2px));
+  transform: translateY(var(--distance-base, 8px)) scale(var(--scale-medium, 0.97));
+}
+.hv-card-flow-leave-to {
+  opacity: 0;
+  transform: scale(var(--scale-medium, 0.97));
 }
 
 .hv-card.dragging {
@@ -2039,10 +2412,64 @@ onBeforeUnmount(() => {
   padding: 0;
 }
 
+.hv-mini-tool.hv-style-btn {
+  gap: 4px;
+  padding: 0 7px 0 6px;
+}
+
+.hv-style-glyph {
+  opacity: 0.92;
+  transition: transform var(--duration-quick, 150ms) var(--ease-smooth-out);
+}
+
+.hv-style-btn:hover .hv-style-glyph,
+.hv-style-btn.active .hv-style-glyph {
+  transform: scale(1.06);
+}
+
+.hv-style-lbl {
+  display: inline-block;
+  min-width: 22px;
+  text-align: center;
+}
+
+.hv-style-caret {
+  opacity: 0.65;
+  transition: transform var(--duration-fast, 250ms) var(--ease-smooth-out);
+}
+
+.hv-style-btn.active .hv-style-caret {
+  transform: scaleY(-1);
+  opacity: 1;
+}
+
+/* Soft in-place label swap on widget switcher pill */
+.hv-lbl-swap-enter-active,
+.hv-lbl-swap-leave-active {
+  transition:
+    opacity var(--duration-quick, 150ms) var(--ease-in-out, ease-in-out),
+    transform var(--duration-quick, 150ms) var(--ease-in-out, ease-in-out),
+    filter var(--duration-quick, 150ms) var(--ease-in-out, ease-in-out);
+}
+.hv-lbl-swap-enter-from {
+  opacity: 0;
+  filter: blur(var(--blur-small, 2px));
+  transform: translateY(3px);
+}
+.hv-lbl-swap-leave-to {
+  opacity: 0;
+  filter: blur(var(--blur-small, 2px));
+  transform: translateY(-3px);
+}
+
 .hv-mini-tool:hover,
 .hv-mini-tool.active {
   background: var(--fc-fill);
   color: var(--fc-on-fill, #ffffff);
+}
+
+.hv-mini-tool:active {
+  transform: scale(0.94);
 }
 
 .hv-filter-empty {
@@ -2077,6 +2504,40 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 5px;
   cursor: pointer;
+  transition: border-color var(--duration-quick, 150ms) var(--ease-smooth-out), color var(--duration-quick, 150ms) var(--ease-smooth-out);
+}
+
+.hv-archived-toggle:hover {
+  border-color: var(--ws-hairline-strong);
+  color: var(--ws-ink);
+}
+
+.hv-acc-chev {
+  transform: rotate(-90deg);
+  transition: transform var(--duration-fast, 250ms) var(--ease-smooth-out);
+}
+
+.hv-archived-toggle.open .hv-acc-chev {
+  transform: rotate(0deg);
+}
+
+.hv-acc-panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows var(--duration-fast, 250ms) var(--ease-smooth-out),
+    opacity var(--duration-quick, 150ms) var(--ease-smooth-out);
+}
+
+.hv-acc-panel.open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.hv-acc-inner {
+  overflow: hidden;
+  padding-top: 2px;
 }
 
 .hv-archived-cnt {
@@ -2324,6 +2785,23 @@ onBeforeUnmount(() => {
   color: var(--ws-ink-secondary);
 }
 
+.hd-time-strip {
+  margin-top: 2px;
+  padding-top: 7px;
+  border-top: 1px solid var(--ws-hairline);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10.5px;
+  color: var(--ws-ink-muted);
+}
+
+.hd-time-strip strong {
+  color: var(--ws-ink);
+  font-weight: 760;
+}
+
 .hd-cal-box {
   --hd-tint: #10a37f;
   flex: none;
@@ -2552,6 +3030,19 @@ onBeforeUnmount(() => {
 
 @media (prefers-reduced-motion: reduce) {
   .hv-card,
+  .hv-card.style-settled,
+  .hv-card-flow-move,
+  .hv-card-flow-enter-active,
+  .hv-card-flow-leave-active,
+  .hv-page-fwd-enter-active,
+  .hv-page-fwd-leave-active,
+  .hv-page-back-enter-active,
+  .hv-page-back-leave-active,
+  .hv-lbl-swap-enter-active,
+  .hv-lbl-swap-leave-active,
+  .hv-acc-panel,
+  .hv-acc-chev,
+  .hv-style-caret,
   .hv-card-act.pulsing::after,
   .hv-check-path,
   .hv-ring-fill,

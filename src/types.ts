@@ -104,6 +104,16 @@ export interface SubscriptionMeta {
 
 export type HabitKind = 'check' | 'count' | 'quit';
 export type HabitTimeOfDay = 'anytime' | 'morning' | 'afternoon' | 'evening';
+/** macOS-style interactive card widget visualizations (type-tailored defaults, non-heatmap by default). */
+export type HabitWidgetStyle =
+  | 'window'
+  | 'spectrum'
+  | 'rings'
+  | 'bars'
+  | 'gauge'
+  | 'journey'
+  | 'pillars'
+  | 'heatmap';
 /** Per-day habit log: positive number = count/check, 'skip' = rest day (anti-guilt), 'relapse' = quit slip. */
 export type HabitLogValue = number | 'skip' | 'relapse';
 
@@ -118,14 +128,21 @@ export interface HabitMeta {
   /** Elastic weekly quota (1..7; 7 = daily, e.g. 3 = "每周 3 次"). */
   weeklyTarget: number;
   timeOfDay: HabitTimeOfDay;
+  /** Optional fixed daily scheduled time window ("HH:MM", e.g. "07:15" - "08:00") for live countdown widgets. */
+  windowStart?: string;
+  windowEnd?: string;
   /** Built-in curated vector icon key (e.g. 'water', 'book', 'meditate', 'moon'). */
   iconKey?: string;
-  /** Hex theme color driving Fushi tonal card & HabitKit heatmap tiles. */
+  /** Hex theme color driving Fushi tonal card & macOS habit widgets. */
   color: string;
+  /** Preferred macOS widget visualization style; omitted = smart default by habit type. */
+  widgetStyle?: HabitWidgetStyle;
   /** Archived habits are hidden from the daily grid while keeping full history. */
   archived?: boolean;
   /** Daily completion map keyed by YYYY-MM-DD. */
   logs: Record<ISODate, HabitLogValue>;
+  /** Per-day local check-in timestamps ("HH:MM"[]) recorded automatically for chronotype & time-of-day analytics. */
+  logTimes?: Record<ISODate, string[]>;
 }
 
 export interface TaskCheckItem {

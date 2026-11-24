@@ -3,13 +3,21 @@ import type { HabitMeta, Task } from '@/types';
 import { addDays } from './date';
 import {
   buildHabitHeatmap,
+  buildHabitMilestoneJourney,
+  buildHabitRecentBars,
+  buildHabitWeeklyPillars,
+  buildHabitWeekRings,
   computeCurrentStreak,
   computeHabitStrength,
+  computeHabitTimeInsights,
   computeHabitWeekdayRates,
+  defaultWidgetStyleForHabit,
   evaluateHabitDay,
+  evaluateHabitWindow,
   extractHeatmapMonthTicks,
   getHabitMilestone,
   guessHabitIcon,
+  nextHabitWidgetStyle,
   resolveHabit,
   stepCountHabit,
   toggleCheckHabit,
@@ -175,5 +183,100 @@ describe('habits engine (check, count, quit & anti-guilt strength)', () => {
 
     expect(getHabitMilestone(21)).toBe(21);
     expect(getHabitMilestone(22)).toBeNull();
+  });
+
+  it('maps tailored macOS widget defaults by habit type and builds Rings, Bars, Pillars & Journey data', () => {
+    expect(defaultWidgetStyleForHabit({ kind: 'check', weeklyTarget: 7, iconKey: 'meditate' })).toBe('rings');
+    expect(defaultWidgetStyleForHabit({ kind: 'check', weeklyTarget: 4, iconKey: 'dumbbell' })).toBe('pillars');
+    expect(defaultWidgetStyleForHabit({ kind: 'count', weeklyTarget: 7, iconKey: 'water' })).toBe('gauge');
+    expect(defaultWidgetStyleForHabit({ kind: 'count', weeklyTarget: 7, iconKey: 'book' })).toBe('bars');
+    expect(defaultWidgetStyleForHabit({ kind: 'quit', weeklyTarget: 7, iconKey: 'moon' })).toBe('journey');
+
+    const today = '2026-11-24';
+    const start = addDays(today, -30);
+    const countMeta: HabitMeta = {
+      kind: 'count',
+      target: 30,
+      step: 10,
+      unit: '分钟',
+      weeklyTarget: 7,
+      timeOfDay: 'evening',
+      color: '#7C3AED',
+      logs: {
+        [today]: 20,
+        [addDays(today, -1)]: 35,
+        [addDays(today, -2)]: 30,
+      },
+    };
+    const rings = buildHabitWeekRings(countMeta, start, today, today, 1);
+    expect(rings).toHaveLength(7);
+    expect(rings.find((r) => r.isToday)?.value).toBe(20);
+
+    const bars = buildHabitRecentBars(countMeta, start, today, today, 4);
+    expect(bars.rows).toHaveLength(4);
+    expect(bars.targetLinePct).toBeGreaterThan(50);
+    expect(bars.targetLinePct).toBeLessThan(95);
+
+    const pillars = buildHabitWeeklyPillars(countMeta, start, today, 1, 4);
+    expect(pillars).toHaveLength(4);
+    expect(pillars[3].isCurrent).toBe(true);
+
+    const journey = buildHabitMilestoneJourney(16);
+    expect(journey.nextMilestone).toBe(21);
+    expect(journey.daysToNext).toBe(5);
+    expect(journey.stations).toHaveLength(5);
+    expect(journey.stations.filter((s) => s.reached).length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('computes fixed time-window live countdowns and aggregates chronotype check-in timestamps', () => {
+    const today = '2026-11-24';
+    const baseMeta: HabitMeta = {
+      kind: 'check',
+      target: 1,
+      weeklyTarget: 7,
+      timeOfDay: 'morning',
+      windowStart: '07:15',
+      windowEnd: '08:00',
+      color: '#10A37F',
+      logs: {},
+      logTimes: {},
+    };
+    expect(defaultWidgetStyleForHabit(baseMeta)).toBe('window');
+
+    const emptyDay = evaluateHabitDay(baseMeta, '2026-11-01', today, today);
+    // 06:30 -> 45m before 07:15 window
+    const upcoming = evaluateHabitWindow(baseMeta, emptyDay, 6 * 60 + 30, today);
+    expect(upcoming.phase).toBe('upcoming');
+    expect(upcoming.primaryReadout).toBe('45m');
+
+    // 07:35 -> inside 07:15-08:00 window (25m left)
+    const active = evaluateHabitWindow(baseMeta, emptyDay, 7 * 60 + 35, today);
+    expect(active.phase).toBe('active');
+    expect(active.primaryReadout).toBe('25m');
+
+    // Check off with recorded clock timestamp "07:28"
+    let logged = toggleCheckHabit(baseMeta, today, '07:28');
+    logged = toggleCheckHabit(logged, addDays(today, -1), '07:45');
+    logged = toggleCheckHabit(logged, addDays(today, -2), '07:12');
+    logged = toggleCheckHabit(logged, addDays(today, -3), '21:10');
+    const doneDay = evaluateHabitDay(logged, '2026-11-01', today, today);
+    const doneWin = evaluateHabitWindow(logged, doneDay, 8 * 60 + 10, today);
+    expect(doneWin.phase).toBe('done');
+    expect(doneWin.primaryReadout).toBe('07:28');
+
+    const task = makeHabitTask('晨间正念呼吸', '2026-11-01', logged);
+    const resolved = resolveHabit(task, today, today, 1);
+    const insights = computeHabitTimeInsights([resolved], today);
+    expect(insights.totalLogs).toBe(4);
+    expect(insights.earliest?.time).toBe('07:12');
+    expect(insights.latest?.time).toBe('21:10');
+    expect(insights.peakHour?.hour).toBe(7);
+    expect(insights.hourBuckets).toHaveLength(24);
+    expect(insights.recentDailyPoints).toHaveLength(14);
+
+    // Quick-cycle widget styles forward & backward with clean wrap-around
+    expect(nextHabitWidgetStyle('window', 1)).toBe('spectrum');
+    expect(nextHabitWidgetStyle('heatmap', 1)).toBe('window');
+    expect(nextHabitWidgetStyle('window', -1)).toBe('heatmap');
   });
 });

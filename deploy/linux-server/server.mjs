@@ -11,6 +11,8 @@ const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(ROOT_DIR, 'data'
 const BACKUP_DIR = path.join(DATA_DIR, 'backups');
 const DATA_FILE = path.join(DATA_DIR, 'fluentcal-data.json');
 const SETTINGS_FILE = path.join(DATA_DIR, 'web-settings.json');
+const ACCOUNT_FILE = path.join(DATA_DIR, 'account.json');
+const CONFLICTS_FILE = path.join(DATA_DIR, 'conflicts.json');
 const SECRET_FILE = path.join(DATA_DIR, '.session-secret');
 
 const HOST = process.env.HOST || '127.0.0.1';
@@ -197,6 +199,179 @@ async function readSettings() {
   }
 }
 
+function defaultAccount() {
+  return {
+    username: AUTH_USER,
+    displayName: AUTH_USER,
+    title: '个人云端工作台',
+    passNumber: 'FC-01',
+    avatarColor: '#10A37F',
+    passwordSalt: null,
+    passwordHash: null,
+    devices: [],
+  };
+}
+
+let cachedAccount = null;
+function loadAccountSync() {
+  if (cachedAccount) return cachedAccount;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(ACCOUNT_FILE, 'utf8'));
+    cachedAccount = { ...defaultAccount(), ...parsed, username: AUTH_USER };
+  } catch {
+    cachedAccount = defaultAccount();
+  }
+  return cachedAccount;
+}
+
+async function saveAccount(next) {
+  cachedAccount = { ...defaultAccount(), ...next, username: AUTH_USER };
+  await writeAtomic(ACCOUNT_FILE, JSON.stringify(cachedAccount, null, 2));
+  return cachedAccount;
+}
+
+function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
+  const hash = crypto.scryptSync(String(password), salt, 32).toString('hex');
+  return { salt, hash };
+}
+
+function verifyPassword(user, password) {
+  const acc = loadAccountSync();
+  if (!safeEqual(user, acc.username)) return false;
+  if (acc.passwordSalt && acc.passwordHash) {
+    const { hash } = hashPassword(password, acc.passwordSalt);
+    return safeEqual(hash, acc.passwordHash);
+  }
+  return safeEqual(password, AUTH_PASSWORD);
+}
+
+function detectPlatform(deviceName, ua = '') {
+  const s = `${deviceName} ${ua}`;
+  if (/win|pc|desktop/i.test(s)) return 'Windows';
+  if (/ipad/i.test(s)) return 'iPad';
+  if (/iphone/i.test(s)) return 'iPhone';
+  if (/android/i.test(s)) return 'Android';
+  if (/mac/i.test(s)) return 'macOS';
+  return 'Web';
+}
+
+async function touchDevice(deviceName, ua = '', isSync = false) {
+  const name = String(deviceName || 'Web Browser').trim().slice(0, 64) || 'Web Browser';
+  const acc = clone(loadAccountSync());
+  const nowTs = Date.now();
+  const list = Array.isArray(acc.devices) ? acc.devices : [];
+  const idx = list.findIndex((d) => d.name === name);
+  const entry = {
+    id: idx >= 0 ? list[idx].id : crypto.createHash('sha1').update(name).digest('hex').slice(0, 10),
+    name,
+    platform: detectPlatform(name, ua),
+    lastSeenAt: nowTs,
+    lastSyncAt: isSync ? nowTs : (idx >= 0 ? list[idx].lastSyncAt ?? null : null),
+  };
+  if (idx >= 0) list[idx] = entry;
+  else list.unshift(entry);
+  acc.devices = list.sort((a, b) => (b.lastSeenAt || 0) - (a.lastSeenAt || 0)).slice(0, 12);
+  await saveAccount(acc);
+}
+
+async function readConflicts() {
+  try {
+    const raw = await fsp.readFile(CONFLICTS_FILE, 'utf8');
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
+
+async function writeConflicts(list) {
+  await writeAtomic(CONFLICTS_FILE, JSON.stringify(list.slice(0, 60), null, 2));
+}
+
+function canonicalStr(value) {
+  if (Array.isArray(value)) return '[' + value.map(canonicalStr).join(',') + ']';
+  if (value && typeof value === 'object') {
+    return '{' + Object.keys(value).sort().map((k) => JSON.stringify(k) + ':' + canonicalStr(value[k])).join(',') + '}';
+  }
+  return JSON.stringify(value ?? null);
+}
+
+function detectServerConflicts(serverView, clientView, baseStamps, clientDevice, serverDevice) {
+  if (!baseStamps || typeof baseStamps !== 'object') return [];
+  const out = [];
+  const detectedAt = Date.now();
+  const FIELD_MAP = {
+    title: '标题', name: '名称', note: '备注', start: '开始日期', end: '截止日期',
+    time: '时刻', done: '完成状态', status: '状态', priority: '优先级',
+    progress: '进度', groupId: '分组', color: '主题色', habit: '习惯记录', subscription: '订阅信息',
+  };
+  for (const col of SYNCED) {
+    const sCol = serverView[col] || {};
+    const cCol = clientView[col] || {};
+    const sMeta = serverView.meta?.[col] || {};
+    const cMeta = clientView.meta?.[col] || {};
+    const bMeta = baseStamps[col] || {};
+    const ids = new Set([...Object.keys(sCol), ...Object.keys(cCol), ...Object.keys(sMeta), ...Object.keys(cMeta)]);
+    for (const id of ids) {
+      const sTs = sMeta[id] ?? 0;
+      const cTs = cMeta[id] ?? 0;
+      const bTs = bMeta[id] ?? 0;
+      if (!sTs || !cTs || sTs === cTs) continue;
+      if (!(sTs > bTs && cTs > bTs)) continue;
+      const sVal = id in sCol ? sCol[id] : null;
+      const cVal = id in cCol ? cCol[id] : null;
+      if (canonicalStr(sVal) === canonicalStr(cVal)) continue;
+      if (sVal === null && cVal === null) continue;
+      const sample = cVal || sVal || {};
+      const itemKind = col === 'groups'
+        ? 'group'
+        : col === 'dayMarks'
+          ? 'dayMark'
+          : sample.habitOnly || sample.habit
+            ? 'habit'
+            : sample.subscriptionOnly || sample.subscription
+              ? 'subscription'
+              : sample.countdownOnly
+                ? 'countdown'
+                : 'task';
+      const title = col === 'tasks'
+        ? (cVal?.title || sVal?.title || `事项 ${id.slice(0, 6)}`)
+        : col === 'groups'
+          ? (cVal?.name || sVal?.name || `分组 ${id.slice(0, 6)}`)
+          : `日期色彩 · ${id}`;
+      let changedFields = ['内容变更'];
+      if (cVal === null) changedFields = ['本机删除 / 云端修改'];
+      else if (sVal === null) changedFields = ['本机修改 / 云端删除'];
+      else if (col === 'dayMarks') changedFields = ['标记颜色'];
+      else {
+        const diff = [];
+        for (const k of new Set([...Object.keys(cVal), ...Object.keys(sVal)])) {
+          if (k === 'updatedAt' || k === 'createdAt' || k === 'order') continue;
+          if (canonicalStr(cVal[k]) !== canonicalStr(sVal[k])) diff.push(FIELD_MAP[k] || k);
+        }
+        if (diff.length) changedFields = diff.slice(0, 5);
+      }
+      out.push({
+        id: `${col}:${id}:${cTs}:${sTs}`,
+        collection: col,
+        itemId: id,
+        itemKind,
+        title,
+        detectedAt,
+        localDevice: clientDevice || '本机',
+        remoteDevice: serverDevice || '云端其他设备',
+        localUpdatedAt: cTs,
+        remoteUpdatedAt: sTs,
+        localValue: cVal !== null ? clone(cVal) : null,
+        remoteValue: sVal !== null ? clone(sVal) : null,
+        changedFields,
+        autoWinner: sTs > cTs ? 'remote' : 'local',
+      });
+    }
+  }
+  return out;
+}
+
 function deepMerge(target, patch) {
   for (const [k, v] of Object.entries(patch)) {
     if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
@@ -260,7 +435,7 @@ function checkBasicAuth(req) {
     if (sep < 0) return false;
     const user = raw.slice(0, sep);
     const pass = raw.slice(sep + 1);
-    return safeEqual(user, AUTH_USER) && safeEqual(pass, AUTH_PASSWORD);
+    return verifyPassword(user, pass);
   } catch {
     return false;
   }
@@ -431,8 +606,9 @@ async function handleWebDav(req, res, pathname) {
   if (method === 'PUT') {
     const body = await readBody(req);
     const text = body.toString('utf8');
+    let parsedDav = null;
     try {
-      decodeCloudFile(text);
+      parsedDav = decodeCloudFile(text);
     } catch {
       res.writeHead(400, { 'Cache-Control': 'no-store, no-transform' });
       res.end('Invalid FluentCal sync payload');
@@ -447,6 +623,7 @@ async function handleWebDav(req, res, pathname) {
         if (!current || stripWeak(ifMatch) !== stripWeak(current.etag)) return { status: 412 };
       }
       const written = await writeCloudFile(text);
+      await touchDevice(parsedDav?.device || 'Desktop / WebDAV', req.headers['user-agent'] || '', true);
       return { status: current ? 204 : 201, etag: written.etag };
     });
     if (result.status === 412) {
@@ -475,9 +652,10 @@ async function handleApi(req, res, pathname) {
     const body = JSON.parse((await readBody(req)).toString('utf8') || '{}');
     const user = typeof body.user === 'string' && body.user.trim() ? body.user.trim() : AUTH_USER;
     const password = typeof body.password === 'string' ? body.password : '';
-    if (!safeEqual(user, AUTH_USER) || !safeEqual(password, AUTH_PASSWORD)) {
-      return sendJson(res, 401, { error: '用户名或密码错误' });
+    if (!verifyPassword(user, password)) {
+      return sendJson(res, 401, { error: '账号或密码错误，请重新核验工牌凭证' });
     }
+    await serialized(() => touchDevice(body.device || 'Web Browser', req.headers['user-agent'] || '', false));
     const exp = Date.now() + 30 * 86_400_000;
     const token = signSession(AUTH_USER, exp);
     const flags = [`${COOKIE_NAME}=${encodeURIComponent(token)}`, 'Path=/', 'HttpOnly', 'SameSite=Lax', `Max-Age=${30 * 86400}`];
@@ -497,16 +675,119 @@ async function handleApi(req, res, pathname) {
     return sendJson(res, 401, { error: '未登录或会话已过期' });
   }
 
+  if (pathname === '/api/account' && method === 'GET') {
+    const payload = await serialized(async () => {
+      const acc = loadAccountSync();
+      const file = await readCloudFile();
+      const conflicts = await readConflicts();
+      let backupCount = 0;
+      try {
+        backupCount = (await fsp.readdir(BACKUP_DIR)).filter((f) => f.endsWith('.json')).length;
+      } catch {
+        backupCount = 0;
+      }
+      return {
+        username: acc.username,
+        displayName: acc.displayName,
+        title: acc.title,
+        passNumber: acc.passNumber,
+        avatarColor: acc.avatarColor,
+        devices: acc.devices || [],
+        backupCount,
+        lastSyncAt: file?.savedAt ?? null,
+        lastSyncDevice: file?.device ?? null,
+        conflictCount: conflicts.length,
+      };
+    });
+    return sendJson(res, 200, payload);
+  }
+
+  if (pathname === '/api/account' && method === 'PATCH') {
+    const body = JSON.parse((await readBody(req)).toString('utf8') || '{}');
+    const result = await serialized(async () => {
+      const acc = clone(loadAccountSync());
+      if (typeof body.displayName === 'string' && body.displayName.trim()) {
+        acc.displayName = body.displayName.trim().slice(0, 32);
+      }
+      if (typeof body.title === 'string') {
+        acc.title = body.title.trim().slice(0, 48) || '个人云端工作台';
+      }
+      if (typeof body.passNumber === 'string' && body.passNumber.trim()) {
+        acc.passNumber = body.passNumber.trim().slice(0, 16);
+      }
+      if (typeof body.avatarColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(body.avatarColor.trim())) {
+        acc.avatarColor = body.avatarColor.trim().toUpperCase();
+      }
+      if (typeof body.newPassword === 'string' && body.newPassword.length > 0) {
+        if (body.newPassword.length < 6) {
+          return { status: 400, data: { ok: false, error: '新密码至少需要 6 位字符' } };
+        }
+        if (!verifyPassword(acc.username, String(body.currentPassword || ''))) {
+          return { status: 403, data: { ok: false, error: '当前密码不正确' } };
+        }
+        const hashed = hashPassword(body.newPassword);
+        acc.passwordSalt = hashed.salt;
+        acc.passwordHash = hashed.hash;
+      }
+      const saved = await saveAccount(acc);
+      const file = await readCloudFile();
+      const conflicts = await readConflicts();
+      let backupCount = 0;
+      try {
+        backupCount = (await fsp.readdir(BACKUP_DIR)).filter((f) => f.endsWith('.json')).length;
+      } catch {
+        backupCount = 0;
+      }
+      return {
+        status: 200,
+        data: {
+          ok: true,
+          account: {
+            username: saved.username,
+            displayName: saved.displayName,
+            title: saved.title,
+            passNumber: saved.passNumber,
+            avatarColor: saved.avatarColor,
+            devices: saved.devices || [],
+            backupCount,
+            lastSyncAt: file?.savedAt ?? null,
+            lastSyncDevice: file?.device ?? null,
+            conflictCount: conflicts.length,
+          },
+        },
+      };
+    });
+    return sendJson(res, result.status, result.data);
+  }
+
+  if (pathname === '/api/conflicts' && method === 'GET') {
+    const conflicts = await serialized(() => readConflicts());
+    return sendJson(res, 200, { conflicts });
+  }
+
+  if (pathname.startsWith('/api/conflicts/') && pathname.endsWith('/resolve') && method === 'POST') {
+    const id = decodeURIComponent(pathname.slice('/api/conflicts/'.length, -'/resolve'.length));
+    const remaining = await serialized(async () => {
+      const list = await readConflicts();
+      const next = list.filter((c) => c.id !== id);
+      await writeConflicts(next);
+      return next;
+    });
+    return sendJson(res, 200, { ok: true, conflicts: remaining });
+  }
+
   if (pathname === '/api/doc' && method === 'GET') {
     const payload = await serialized(async () => {
       const file = await readCloudFile();
       const settings = await readSettings();
+      const conflicts = await readConflicts();
       return {
         view: file ? file.view : emptyView(),
         etag: file ? file.etag : null,
         savedAt: file ? file.savedAt : null,
         device: file ? file.device : null,
         settings,
+        conflicts,
       };
     });
     return sendJson(res, 200, payload);
@@ -519,14 +800,25 @@ async function handleApi(req, res, pathname) {
     const result = await serialized(async () => {
       const current = await readCloudFile();
       const base = current ? current.view : emptyView();
+      const detected = current
+        ? detectServerConflicts(base, incoming, body.baseStamps, device, current.device)
+        : [];
+      let allConflicts = await readConflicts();
+      if (detected.length) {
+        const byItem = new Map(allConflicts.map((c) => [`${c.collection}:${c.itemId}`, c]));
+        for (const c of detected) byItem.set(`${c.collection}:${c.itemId}`, c);
+        allConflicts = [...byItem.values()].sort((a, b) => (b.detectedAt || 0) - (a.detectedAt || 0));
+        await writeConflicts(allConflicts);
+      }
       const merged = mergeCloud(clone(base), incoming);
       const changed = !current || JSON.stringify(base) !== JSON.stringify(merged);
+      await touchDevice(device, req.headers['user-agent'] || '', true);
       if (changed) {
         const savedAt = Date.now();
         const written = await writeCloudFile(encodeCloudFile(merged, device, savedAt));
-        return { view: merged, etag: written.etag, savedAt, device };
+        return { view: merged, etag: written.etag, savedAt, device, conflicts: allConflicts };
       }
-      return { view: merged, etag: current.etag, savedAt: current.savedAt, device: current.device };
+      return { view: merged, etag: current.etag, savedAt: current.savedAt, device: current.device, conflicts: allConflicts };
     });
     return sendJson(res, 200, result);
   }

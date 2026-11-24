@@ -25,7 +25,7 @@ startThemeSync();
 const items = computed(() =>
   [
     ...(isMobile ? [] : [{ key: 'general', label: '常规', icon: 'settings' }]),
-    { key: 'sync', label: '同步', icon: 'cloud' },
+    { key: 'sync', label: '账号与同步', icon: 'cloud' },
     { key: 'appearance', label: '外观', icon: 'palette' },
     { key: 'calendar', label: '日历', icon: 'calendar' },
     { key: 'gantt', label: '甘特图', icon: 'gantt' },

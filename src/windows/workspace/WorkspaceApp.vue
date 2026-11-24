@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { FButton, FTextBox } from '@/fluent';
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue';
+import { FButton } from '@/fluent';
 import type { ISODate } from '@/types';
 import { call, currentWindow, isMobile, isServer } from '@/api';
 import { checkSession, loginServer, logoutServer, serverState } from '@/serverApi';
@@ -44,7 +44,7 @@ import WorkspaceTopBar from './WorkspaceTopBar.vue';
 import WorkspaceMobileHeader from './WorkspaceMobileHeader.vue';
 import WorkspaceMobileDock from './WorkspaceMobileDock.vue';
 import WorkspaceMobileDrawer from './WorkspaceMobileDrawer.vue';
-import GroupSquircle from './GroupSquircle.vue';
+import HangingPassLogin from './HangingPassLogin.vue';
 import DailyView from './DailyView.vue';
 import CalendarStage from './CalendarStage.vue';
 import TasksView from './TasksView.vue';
@@ -246,7 +246,25 @@ function pushNavSnap(snap: NavSnap) {
 }
 
 const loginUser = ref('fluentcal');
-const loginPass = ref('');
+const passPreviewOpen = ref(
+  (() => {
+    try {
+      return new URLSearchParams(window.location.search).get('preview') === 'pass';
+    } catch {
+      return false;
+    }
+  })(),
+);
+
+function openPassPreview() {
+  passPreviewOpen.value = true;
+}
+
+function closePassPreview() {
+  passPreviewOpen.value = false;
+}
+
+provide('openPassPreview', openPassPreview);
 
 watch([tabs, activeTabId], () => persistTabs({ tabs: tabs.value, activeId: activeTabId.value }), { deep: true });
 watch(sidebarOpen, (v) => {
@@ -529,7 +547,7 @@ function handleNewTask(groupId?: string) {
 }
 
 function openSettingsTab(page?: string) {
-  settingsPage.value = page;
+  settingsPage.value = typeof page === 'string' ? page : undefined;
   activeTabId.value = 'tab:settings';
 }
 
@@ -564,6 +582,11 @@ function onKey(e: KeyboardEvent) {
   const ctrl = e.ctrlKey || e.metaKey;
 
   if (e.key === 'Escape') {
+    if (passPreviewOpen.value) {
+      e.preventDefault();
+      passPreviewOpen.value = false;
+      return;
+    }
     if (document.querySelector('[data-f-popup], .f-flyout, [role="menu"], .cd-backdrop, .f-dlg-overlay, .tfb-popover, .sb-help-pop')) return;
     if (mobileDrawerOpen.value) {
       mobileDrawerOpen.value = false;
@@ -642,11 +665,11 @@ function onKey(e: KeyboardEvent) {
   }
 }
 
-async function submitLogin() {
-  if (!loginPass.value || serverState.loggingIn) return;
-  const ok = await loginServer(loginUser.value.trim() || 'fluentcal', loginPass.value);
+async function submitLogin(payload: { user: string; password: string }) {
+  if (!payload.password || serverState.loggingIn) return;
+  loginUser.value = payload.user.trim() || 'fluentcal';
+  const ok = await loginServer(loginUser.value, payload.password);
   if (ok) {
-    loginPass.value = '';
     await bootWorkspace();
   }
 }
@@ -802,7 +825,7 @@ onBeforeUnmount(() => {
           @quick-search="openQuickSearch"
           @open-task="openTaskInInspector"
           @summon-desk="summonDesk"
-          @open-settings="openRootSettings"
+          @open-settings="openSettingsTab"
           @toggle-theme="toggleWorkspaceTheme"
           @logout="handleLogout"
         />
@@ -1027,7 +1050,7 @@ onBeforeUnmount(() => {
       @new-task="handleNewTask"
       @quick-search="openQuickSearch"
       @open-task="openTaskInInspector"
-      @open-settings="openRootSettings"
+      @open-settings="openSettingsTab"
       @toggle-theme="toggleWorkspaceTheme"
       @summon-desk="summonDesk"
       @logout="handleLogout"
@@ -1044,28 +1067,25 @@ onBeforeUnmount(() => {
       @open-task="openTaskInInspector"
     />
 
-    <!-- Standalone Server Login Gate -->
-    <div v-if="isServer && !serverState.authenticated" class="ws-server-gate">
-      <form class="ws-gate-card ws-card" @submit.prevent="submitLogin">
-        <div class="gate-brand">
-          <GroupSquircle name="FC" color-key="gray" :size="36" />
-          <div>
-            <h2>FluentCal 云端工作台</h2>
-            <p class="gate-tagline">多端日程与待办空间</p>
-          </div>
-        </div>
-        <p v-if="serverState.checking" class="gate-sub">正在检查登录状态…</p>
-        <template v-else>
-          <p class="gate-sub">登录后即可在手机、iPad、浏览器与电脑桌面同步日程和工作台数据。</p>
-          <FTextBox v-model="loginUser" placeholder="用户名" />
-          <FTextBox v-model="loginPass" type="password" placeholder="密码" @enter="submitLogin" />
-          <p v-if="serverState.loginError" class="gate-err" role="alert">{{ serverState.loginError }}</p>
-          <FButton variant="accent" :disabled="serverState.loggingIn" @click="submitLogin">
-            {{ serverState.loggingIn ? '登录中…' : '登录' }}
-          </FButton>
-        </template>
-      </form>
-    </div>
+    <!-- Avant-Garde Physical Hanging Pass Login Gate (Server First-Entry & Interactive Preview) -->
+    <Transition name="hp-gate">
+      <HangingPassLogin
+        v-if="(isServer && !serverState.authenticated) || passPreviewOpen"
+        :initial-user="serverState.account?.username || serverState.user || loginUser"
+        :display-name="serverState.account?.displayName || ''"
+        :owner-title="serverState.account?.title || '个人多端加密工作台'"
+        :pass-number="serverState.account?.passNumber || 'FC-01'"
+        :accent-color="serverState.account?.avatarColor || '#10A37F'"
+        :checking="isServer && !serverState.authenticated && serverState.checking"
+        :logging-in="isServer && !serverState.authenticated && serverState.loggingIn"
+        :error="isServer && !serverState.authenticated ? serverState.loginError : ''"
+        :ws-theme="wsTheme"
+        :preview-mode="passPreviewOpen && (!isServer || serverState.authenticated)"
+        @submit="submitLogin"
+        @toggle-theme="toggleWorkspaceTheme"
+        @close-preview="closePassPreview"
+      />
+    </Transition>
   </div>
 </template>
 
@@ -1215,60 +1235,13 @@ onBeforeUnmount(() => {
   transform: translate(-50%, 8px);
 }
 
-.ws-server-gate {
-  position: fixed;
-  inset: 0;
-  z-index: 90;
-  background: var(--ws-gate-bg);
-  backdrop-filter: blur(16px);
-  display: grid;
-  place-items: center;
-  padding:
-    max(16px, env(safe-area-inset-top))
-    max(16px, env(safe-area-inset-right))
-    max(16px, env(safe-area-inset-bottom))
-    max(16px, env(safe-area-inset-left));
+.hp-gate-enter-active,
+.hp-gate-leave-active {
+  transition: opacity 320ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.ws-gate-card {
-  width: min(380px, calc(100vw - 32px));
-  padding: 26px;
-  border-radius: 22px;
-  display: flex;
-  flex-direction: column;
-  gap: 13px;
-  box-shadow: var(--ws-shadow-float);
-}
-
-.gate-brand {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.ws-gate-card h2 {
-  margin: 0;
-  font-family: var(--font-display);
-  font-size: 18px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-}
-
-.gate-tagline {
-  margin: 2px 0 0;
-  font-size: 12px;
-  color: var(--ws-ink-muted);
-}
-
-.gate-sub {
-  margin: 0;
-  font-size: 12.5px;
-  color: var(--ws-ink-secondary);
-}
-
-.gate-err {
-  margin: 0;
-  font-size: 12px;
-  color: var(--ws-danger);
+.hp-gate-enter-from,
+.hp-gate-leave-to {
+  opacity: 0;
 }
 </style>

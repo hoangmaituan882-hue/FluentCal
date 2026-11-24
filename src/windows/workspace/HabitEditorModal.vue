@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { FIcon } from '@/fluent';
-import type { HabitKind, HabitMeta, HabitTimeOfDay, ISODate, Task } from '@/types';
+import type { HabitKind, HabitMeta, HabitTimeOfDay, HabitWidgetStyle, ISODate, Task } from '@/types';
 import {
+  defaultWidgetStyleForHabit,
   getHabitIcon,
+  getHabitWidgetStyleSpec,
   guessHabitIcon,
   HABIT_COLOR_SWATCHES,
   HABIT_ICONS,
@@ -11,6 +13,9 @@ import {
   HABIT_PRESETS,
   HABIT_TIME_META,
   HABIT_TIME_ORDER,
+  HABIT_WIDGET_STYLES,
+  HABIT_WINDOW_PRESETS,
+  resolveHabitWidgetStyle,
   type HabitPreset,
 } from '@/lib/habits';
 import { normalizeHexColor } from '@/lib/subscriptions';
@@ -20,8 +25,10 @@ import { useViewport } from '@/composables/useViewport';
 import { notify } from '../desk/state';
 import FushiTonalCard from './FushiTonalCard.vue';
 import HabitEmblem from './HabitEmblem.vue';
+import HabitWidgetStyleGlyph from './HabitWidgetStyleGlyph.vue';
+import { useSlidingIndicator } from './useSlidingIndicator';
 
-type PopKind = 'icon' | 'color' | 'freq' | 'time' | null;
+type PopKind = 'icon' | 'color' | 'freq' | 'time' | 'style' | 'window' | null;
 
 const props = defineProps<{
   open: boolean;
@@ -48,6 +55,10 @@ const color = ref<string>('#0EA5E9');
 const iconAutoColor = ref<string>('#0EA5E9');
 const iconLocked = ref(false);
 const colorLocked = ref(false);
+const widgetStyle = ref<HabitWidgetStyle>('rings');
+const styleLocked = ref(false);
+const windowStart = ref('');
+const windowEnd = ref('');
 const startDate = ref<ISODate>(now.value);
 const saving = ref(false);
 
@@ -58,6 +69,28 @@ const hexInvalid = ref(false);
 const activePop = ref<PopKind>(null);
 const popStyle = ref<Record<string, string>>({});
 const popRef = ref<HTMLElement>();
+const hoverStyleKey = ref<HabitWidgetStyle | null>(null);
+
+// Sliding indicator for 3-segment Habit Kind control
+const kindSegRef = ref<HTMLElement>();
+const { style: kindPillStyle, ready: kindPillReady, visible: kindPillVisible } = useSlidingIndicator(
+  kindSegRef,
+  '.hm-kind-btn.active',
+  [kind, () => props.open],
+);
+
+const recommendedStyle = computed<HabitWidgetStyle>(() =>
+  defaultWidgetStyleForHabit({
+    kind: kind.value,
+    weeklyTarget: weeklyTarget.value,
+    iconKey: iconKey.value,
+    windowStart: windowStart.value || undefined,
+  }),
+);
+
+const displayStyleSpec = computed(() =>
+  getHabitWidgetStyleSpec(hoverStyleKey.value ?? widgetStyle.value),
+);
 
 const parsedTarget = computed(() => {
   const n = Number.parseFloat(targetStr.value);
@@ -94,8 +127,8 @@ function openPop(k: Exclude<PopKind, null>, event: MouseEvent) {
   }
   if (!el) return;
   const r = el.getBoundingClientRect();
-  const estW = k === 'icon' ? 304 : k === 'color' ? 276 : k === 'freq' ? 234 : 180;
-  const estH = k === 'icon' ? 250 : k === 'color' ? 216 : 186;
+  const estW = k === 'icon' ? 304 : k === 'style' ? 336 : k === 'window' ? 296 : k === 'color' ? 276 : k === 'freq' ? 234 : 180;
+  const estH = k === 'icon' ? 250 : k === 'style' ? 356 : k === 'window' ? 238 : k === 'color' ? 216 : 186;
   const vw = window.innerWidth;
   const vh = window.innerHeight;
   const margin = 12;
@@ -204,12 +237,53 @@ function applyPreset(p: HabitPreset) {
   unit.value = p.unit ?? '次';
   weeklyTarget.value = p.weeklyTarget;
   timeOfDay.value = p.timeOfDay;
+  windowStart.value = p.windowStart ?? '';
+  windowEnd.value = p.windowEnd ?? '';
   iconKey.value = p.iconKey;
   color.value = p.color;
   iconAutoColor.value = p.color;
   hexInput.value = p.color.toUpperCase();
   iconLocked.value = true;
   colorLocked.value = false;
+  widgetStyle.value =
+    p.widgetStyle ??
+    defaultWidgetStyleForHabit({
+      kind: p.kind,
+      weeklyTarget: p.weeklyTarget,
+      iconKey: p.iconKey,
+      windowStart: p.windowStart,
+    });
+  styleLocked.value = false;
+}
+
+// Auto-update recommended macOS widget style when kind/frequency/icon/window changes (unless manually locked)
+watch([kind, weeklyTarget, iconKey, windowStart], () => {
+  if (!props.open || styleLocked.value) return;
+  widgetStyle.value = defaultWidgetStyleForHabit({
+    kind: kind.value,
+    weeklyTarget: weeklyTarget.value,
+    iconKey: iconKey.value,
+    windowStart: windowStart.value || undefined,
+  });
+});
+
+function pickWidgetStyle(s: HabitWidgetStyle) {
+  widgetStyle.value = s;
+  styleLocked.value = true;
+  closePop();
+}
+
+function applyWindowPreset(start: string, end: string, tod: HabitTimeOfDay) {
+  windowStart.value = start;
+  windowEnd.value = end;
+  timeOfDay.value = tod;
+  closePop();
+}
+
+function clearWindow() {
+  windowStart.value = '';
+  windowEnd.value = '';
+  closePop();
 }
 
 // Magic auto-icon & color morphing as the user types a new habit title
@@ -275,6 +349,10 @@ watch(
       hexInput.value = (m.color || spec.defaultColor).toUpperCase();
       iconLocked.value = true;
       colorLocked.value = true;
+      widgetStyle.value = resolveHabitWidgetStyle(m);
+      styleLocked.value = true;
+      windowStart.value = m.windowStart ?? '';
+      windowEnd.value = m.windowEnd ?? '';
       startDate.value = task.start;
     } else {
       title.value = '';
@@ -290,6 +368,10 @@ watch(
       hexInput.value = '#10A37F';
       iconLocked.value = false;
       colorLocked.value = false;
+      widgetStyle.value = 'rings';
+      styleLocked.value = false;
+      windowStart.value = '';
+      windowEnd.value = '';
       startDate.value = now.value;
     }
     await nextTick();
@@ -303,6 +385,7 @@ async function onSubmit() {
   saving.value = true;
   try {
     const existingLogs = props.editingTask?.habit.logs ?? {};
+    const existingLogTimes = props.editingTask?.habit.logTimes;
     const meta: HabitMeta = {
       kind: kind.value,
       target: kind.value === 'count' ? parsedTarget.value : 1,
@@ -310,10 +393,14 @@ async function onSubmit() {
       unit: kind.value === 'count' ? unit.value.trim() || '次' : undefined,
       weeklyTarget: kind.value === 'quit' ? 7 : weeklyTarget.value,
       timeOfDay: timeOfDay.value,
+      windowStart: windowStart.value.trim() || undefined,
+      windowEnd: windowStart.value.trim() ? (windowEnd.value.trim() || undefined) : undefined,
       iconKey: iconKey.value,
       color: color.value,
+      widgetStyle: widgetStyle.value,
       archived: props.editingTask?.habit.archived,
       logs: existingLogs,
+      logTimes: existingLogTimes,
     };
 
     if (props.editingTask) {
@@ -477,8 +564,15 @@ async function onDelete() {
             </div>
           </div>
 
-          <!-- Habit Kind 3-Segment Selector (Check | Count | Quit) -->
-          <div class="hm-kind-seg" role="radiogroup" aria-label="习惯类型">
+          <!-- Habit Kind 3-Segment Selector with Liquid Sliding Pill (Check | Count | Quit) -->
+          <div ref="kindSegRef" class="hm-kind-seg" role="radiogroup" aria-label="习惯类型">
+            <span
+              v-if="kindPillVisible"
+              class="ws-slide-pill hm-kind-pill"
+              :class="{ 'no-anim': !kindPillReady }"
+              :style="kindPillStyle"
+              aria-hidden="true"
+            />
             <button
               v-for="k in (['check', 'count', 'quit'] as const)"
               :key="k"
@@ -491,20 +585,47 @@ async function onDelete() {
             </button>
           </div>
 
-          <!-- Quantitative Target Strip (Only when kind === 'count', compact 1 row!) -->
-          <div v-if="kind === 'count'" class="hm-count-row">
-            <label class="hm-mini-box">
-              <span>每日目标</span>
-              <input v-model="targetStr" type="number" min="1" step="any" class="hm-mini-in tabular" required />
-            </label>
-            <label class="hm-mini-box">
-              <span>每次步进</span>
-              <input v-model="stepStr" type="number" min="1" step="any" class="hm-mini-in tabular" required />
-            </label>
-            <label class="hm-mini-box">
-              <span>单位</span>
-              <input v-model="unit" type="text" maxlength="6" class="hm-mini-in" placeholder="杯/分钟" />
-            </label>
+          <!-- Quantitative Target Strip (Smooth Grid-Row Accordion Reveal, Zero Jump!) -->
+          <div class="hm-count-acc" :class="{ open: kind === 'count' }" :aria-hidden="kind !== 'count'">
+            <div class="hm-count-acc-inner">
+              <div class="hm-count-row">
+                <label class="hm-mini-box">
+                  <span>每日目标</span>
+                  <input
+                    v-model="targetStr"
+                    type="number"
+                    min="1"
+                    step="any"
+                    class="hm-mini-in tabular"
+                    :required="kind === 'count'"
+                    :disabled="kind !== 'count'"
+                  />
+                </label>
+                <label class="hm-mini-box">
+                  <span>每次步进</span>
+                  <input
+                    v-model="stepStr"
+                    type="number"
+                    min="1"
+                    step="any"
+                    class="hm-mini-in tabular"
+                    :required="kind === 'count'"
+                    :disabled="kind !== 'count'"
+                  />
+                </label>
+                <label class="hm-mini-box">
+                  <span>单位</span>
+                  <input
+                    v-model="unit"
+                    type="text"
+                    maxlength="6"
+                    class="hm-mini-in"
+                    placeholder="杯/分钟"
+                    :disabled="kind !== 'count'"
+                  />
+                </label>
+              </div>
+            </div>
           </div>
 
           <!-- Lightweight Semantic Attribute Capsules -->
@@ -519,6 +640,32 @@ async function onDelete() {
             >
               <FIcon name="repeat" :size="11" />
               <span>{{ weeklyTarget >= 7 ? '每天' : `每周 ${weeklyTarget} 天` }}</span>
+              <FIcon name="chevronDown" :size="10" class="hm-caret" />
+            </button>
+
+            <button
+              type="button"
+              class="hm-attr-pill"
+              :class="{ open: activePop === 'style', lit: styleLocked }"
+              data-hpop-trigger="style"
+              title="选择习惯小组件展示视图"
+              @click="openPop('style', $event)"
+            >
+              <HabitWidgetStyleGlyph :style-key="widgetStyle" compact class="hm-style-mini-glyph" />
+              <span>{{ getHabitWidgetStyleSpec(widgetStyle).label }}</span>
+              <FIcon name="chevronDown" :size="10" class="hm-caret" />
+            </button>
+
+            <button
+              type="button"
+              class="hm-attr-pill"
+              :class="{ open: activePop === 'window', lit: !!windowStart }"
+              data-hpop-trigger="window"
+              title="设置固定执行时间段（开启实时倒计时）"
+              @click="openPop('window', $event)"
+            >
+              <FIcon name="clock" :size="11" />
+              <span class="tabular">{{ windowStart ? `${windowStart}${windowEnd ? `–${windowEnd}` : ''}` : '固定时段' }}</span>
               <FIcon name="chevronDown" :size="10" class="hm-caret" />
             </button>
 
@@ -674,6 +821,75 @@ async function onDelete() {
             >
               {{ d === 7 ? '每天' : `每周 ${d} 天` }}
             </button>
+          </div>
+        </template>
+
+        <!-- WIDGET STYLE PICKER POPOVER (Shared Miniature macOS Widget Schematics + Tagline & Smart Rec) -->
+        <template v-else-if="activePop === 'style'">
+          <div class="smp-head">
+            <span class="smp-title">选择小组件视图</span>
+            <span class="hmp-style-hint">{{ displayStyleSpec.tagline }}</span>
+          </div>
+          <div class="hmp-style-grid" @pointerleave="hoverStyleKey = null">
+            <button
+              v-for="st in HABIT_WIDGET_STYLES"
+              :key="st.key"
+              type="button"
+              class="sm-ic-tile hmp-style-tile"
+              :class="{ active: widgetStyle === st.key }"
+              @pointerenter="hoverStyleKey = st.key"
+              @click="
+                hoverStyleKey = null;
+                pickWidgetStyle(st.key);
+              "
+            >
+              <span v-if="widgetStyle === st.key" class="sm-ic-check" aria-hidden="true">
+                <FIcon name="check" :size="9" />
+              </span>
+              <span v-else-if="st.key === recommendedStyle" class="hmp-rec-tag">推荐</span>
+              <HabitWidgetStyleGlyph :style-key="st.key" class="hmp-style-svg" />
+              <span class="hmp-style-name">{{ st.label }}</span>
+              <span class="hmp-style-tag">{{ st.tagline }}</span>
+            </button>
+          </div>
+          <div class="hmp-style-desc">{{ displayStyleSpec.desc }}</div>
+        </template>
+
+        <!-- FIXED TIME WINDOW POPOVER -->
+        <template v-else-if="activePop === 'window'">
+          <div class="smp-head">
+            <span class="smp-title">固定执行时间段</span>
+            <button
+              v-if="windowStart"
+              type="button"
+              class="smp-follow-btn"
+              @click="clearWindow"
+            >
+              设为全天任意
+            </button>
+          </div>
+          <div class="hmp-win-presets">
+            <button
+              v-for="wp in HABIT_WINDOW_PRESETS"
+              :key="wp.label"
+              type="button"
+              class="smp-choice tabular"
+              :class="{ active: windowStart === wp.start && windowEnd === wp.end }"
+              @click="applyWindowPreset(wp.start, wp.end, wp.timeOfDay)"
+            >
+              {{ wp.label }}
+            </button>
+          </div>
+          <div class="hmp-win-custom">
+            <label class="hmp-time-box">
+              <span>开始</span>
+              <input v-model="windowStart" type="time" class="hmp-time-in tabular" />
+            </label>
+            <span class="hmp-time-sep">–</span>
+            <label class="hmp-time-box">
+              <span>结束</span>
+              <input v-model="windowEnd" type="time" class="hmp-time-in tabular" />
+            </label>
           </div>
         </template>
 
@@ -942,6 +1158,7 @@ async function onDelete() {
 }
 
 .hm-kind-seg {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 4px;
@@ -951,7 +1168,14 @@ async function onDelete() {
   background: var(--ws-card-subtle);
 }
 
+.hm-kind-pill {
+  border-radius: 9px;
+  background: var(--ws-ink);
+}
+
 .hm-kind-btn {
+  position: relative;
+  z-index: 1;
   height: 32px;
   border: 0;
   border-radius: 9px;
@@ -961,12 +1185,35 @@ async function onDelete() {
   font-size: 12.5px;
   font-weight: 660;
   cursor: pointer;
-  transition: background-color 140ms ease, color 140ms ease;
+  transition: color var(--duration-quick, 150ms) var(--ease-smooth-out);
 }
 
 .hm-kind-btn.active {
-  background: var(--ws-ink);
+  background: transparent;
   color: var(--ws-ink-inverse);
+}
+
+.hm-count-acc {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  margin-top: -12px;
+  pointer-events: none;
+  transition:
+    grid-template-rows var(--duration-fast, 250ms) var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1)),
+    opacity var(--duration-quick, 150ms) var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1)),
+    margin-top var(--duration-fast, 250ms) var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1));
+}
+
+.hm-count-acc.open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  margin-top: 0;
+  pointer-events: auto;
+}
+
+.hm-count-acc-inner {
+  overflow: hidden;
 }
 
 .hm-count-row {
@@ -1023,6 +1270,15 @@ async function onDelete() {
   font-size: 12px;
   font-weight: 620;
   cursor: pointer;
+  transition:
+    background-color var(--duration-quick, 150ms) var(--ease-smooth-out),
+    border-color var(--duration-quick, 150ms) var(--ease-smooth-out),
+    color var(--duration-quick, 150ms) var(--ease-smooth-out),
+    transform var(--duration-quick, 150ms) var(--ease-smooth-out);
+}
+
+.hm-attr-pill:active {
+  transform: scale(0.96);
 }
 
 .hm-attr-pill:hover,
@@ -1033,8 +1289,18 @@ async function onDelete() {
   color: var(--ws-ink);
 }
 
+.hm-style-mini-glyph {
+  opacity: 0.86;
+}
+
 .hm-caret {
   opacity: 0.55;
+  transition: transform var(--duration-fast, 250ms) var(--ease-smooth-out);
+}
+
+.hm-attr-pill.open .hm-caret {
+  transform: scaleY(-1);
+  opacity: 0.9;
 }
 
 .hm-date-pill {
@@ -1123,5 +1389,123 @@ async function onDelete() {
   max-height: 204px;
   overflow-y: auto;
   padding: 2px;
+}
+
+.hmp-style-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: 2px;
+}
+
+.hmp-style-tile {
+  padding: 7px 6px 6px !important;
+  gap: 3px !important;
+}
+
+.hmp-style-tile.active .hmp-style-svg,
+.hmp-style-tile:hover .hmp-style-svg {
+  color: var(--pop-tint, #10a37f);
+}
+
+.hmp-style-svg {
+  width: 60px;
+  height: 28px;
+  display: block;
+  transition: transform var(--duration-quick, 150ms) var(--ease-smooth-out), color var(--duration-quick, 150ms) var(--ease-smooth-out);
+}
+
+.hmp-style-tile:hover .hmp-style-svg {
+  transform: scale(1.04);
+}
+
+.hmp-style-name {
+  font-size: 11px;
+  font-weight: 760;
+  color: var(--ws-ink, #1c1b19);
+}
+
+.hmp-style-tag {
+  font-size: 9.5px;
+  font-weight: 580;
+  color: var(--ws-ink-muted, #8e8a82);
+}
+
+.hmp-style-hint {
+  font-size: 10.5px;
+  font-weight: 660;
+  color: var(--pop-tint, #10a37f);
+}
+
+.hmp-rec-tag {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--pop-tint, #10a37f) 14%, transparent);
+  color: var(--pop-tint, #10a37f);
+  font-size: 9px;
+  font-weight: 760;
+  line-height: 1.3;
+}
+
+.hmp-style-desc {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--ws-hairline, rgba(28, 25, 23, 0.08));
+  font-size: 10.5px;
+  font-weight: 560;
+  color: var(--ws-ink-muted, #8e8a82);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hmp-win-presets {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.hmp-win-custom {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--ws-hairline, rgba(28, 25, 23, 0.08));
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hmp-time-box {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 10px;
+  border: 1px solid var(--ws-hairline, rgba(28, 25, 23, 0.08));
+  background: var(--ws-card-subtle, #f5f4f1);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--ws-ink-muted, #8e8a82);
+}
+
+.hmp-time-in {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ws-ink, #1c1b19);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  outline: none;
+}
+
+.hmp-time-sep {
+  font-size: 12px;
+  color: var(--ws-ink-muted, #8e8a82);
 }
 </style>
